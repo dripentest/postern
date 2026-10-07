@@ -100,63 +100,118 @@ MODES:
   both   Run ssrf then host.
 
 TARGETING:
-  -r string        Raw HTTP request file (saved from Burp "Copy to file"). Required.
-  -p string        Parameter to fuzz (query / form-urlencoded / JSON / multipart):
-                   a name, "auto" (SSRF-candidate params), or "all" (every param).
-                   If omitted in ssrf mode, a literal FUZZ marker is used.
-  -list-params     Discover and print request parameters (candidates marked), then exit.
-  -url string      Override target as scheme://host[:port] (else taken from Host header).
-  -tls             Force TLS when -url is not given.
-  -proxy string    HTTP proxy host:port (e.g. Burp 127.0.0.1:8080).
-  -H value         Extra header added to every request (repeatable): -H "Name: Value".
+  -r <file>         Raw HTTP request used as the template (Burp: "Copy to file",
+                    or hand-written). Cookies, auth, CSRF token, Content-Type and
+                    body are all kept; only the chosen spot is mutated, so you hit
+                    the endpoint exactly as the app sees it. Required.
+  -p <value>        Where to inject SSRF payloads:
+                      <name> a specific parameter - works in the query string, a
+                             form-urlencoded body, a JSON key (even nested), or a
+                             multipart field, e.g. -p imageUrl
+                      auto   auto-pick parameters that look SSRF-prone (name like
+                             url/redirect/callback/host/path, or a URL-like value)
+                      all    every parameter discovered in the request
+                    If omitted (ssrf mode), the literal token FUZZ in the request
+                    marks the spot - put it anywhere: path, header, nested JSON.
+  -list-params      List the parameters found in the request (SSRF candidates
+                    marked with *) and exit. Recon step before you pick -p.
+  -url <u>          Connect to scheme://host[:port] instead of resolving from the
+                    Host header. Use for a lab/VPN IP while the Host header stays
+                    different, or to pin a port/scheme.
+  -tls              Speak TLS to the target when you did not pass an https:// -url.
+  -proxy <host:port> Route every request through an HTTP proxy (e.g. Burp at
+                    127.0.0.1:8080) to watch, log or replay the traffic.
+  -H "Name: Value"  Add a header to every request (repeatable). Needed e.g. for
+                    GCP metadata (-H "Metadata-Flavor: Google"), Azure
+                    (-H "Metadata: true") or to carry an auth token.
 
-PAYLOADS / PLACEHOLDERS:
-  -payloads string Directory with payload files (default "payloads").
-  -lhost string    Value for {{LHOST}} (redirect tricks, your server).
-  -evil string     Value for {{EVIL}} (host poisoning). If empty, falls back to OOB.
-  -itarget string  Value for {{TARGET}} internal address (default "127.0.0.1").
-  -sweep string    Last-octet sweep of /24 bases: "private"
-                   (192.168.0,10.0.0,172.16.0,127.0.0) or a custom list
-                   like "10.10.10,192.168.56".
-  -ports string    Post-SSRF recon (ssrf mode): scan ports through the confirmed
-                   SSRF. Spec: "top", "all", CSV "80,6379", or range "1-1024".
-                   Ranges are reordered to try well-known/dev ports first. Open
-                   ports surface as rare response clusters.
-  -scan-host string Host to port-scan (default 127.0.0.1); or combine -ports with
-                   -sweep for a network scan (every swept IP x each port).
-  -path string     Host mode: single request path (e.g. /admin), overrides the
-                   request path for routing-based SSRF.
-  -paths string    Host mode: path list - "default" (built-in paths.txt) or a
-                   file. Multiplies the host matrix by each path.
+SCOPE / PAYLOADS:
+  -payloads <dir>   Directory holding the payload word-lists (default "payloads").
+                    Edit those files to add or trim payloads - no rebuild needed.
+  -sweep <spec>     Brute the last octet (.0-.255) of /24 bases to reach internal
+                    hosts you don't know yet (gateways, neighbours). "private" =
+                    the RFC1918 ranges (192.168.0, 10.0.0, 172.16.0, 127.0.0), or
+                    a custom list like "10.10.10,192.168.56". In host mode these
+                    become Host values (routing SSRF); in ssrf mode, http://IP.
+  -ports <spec>     Post-SSRF recon (ssrf mode): turn a confirmed SSRF into a port
+                    scanner - the server fetches http(s)://host:port for you.
+                    "top" (curated), "all" (1-65535), CSV "80,6379", or range
+                    "1-1024". Ranges are reordered to try well-known and round
+                    dev ports (80,443,3306,6379,3000,8000,8080...) first. Open
+                    ports stand out as rare clusters in the summary.
+  -scan-host <host> Host to port-scan with -ports (default 127.0.0.1). Combine
+                    -ports with -sweep instead to scan a whole network (every
+                    swept IP x each port).
+  -path <p>         Host mode: replace the request path with this single path
+                    (e.g. /admin) - for routing SSRF where the interesting page
+                    isn't "/".
+  -paths <spec>     Host mode: replay every host case across a list of paths -
+                    "default" (built-in paths.txt: /admin, /actuator, /internal,
+                    ...) or your own file. Multiplies the host matrix by paths.
+  -lhost <addr>     Fills {{LHOST}} in payloads - your server/IP for redirect
+                    tricks (the box hosting your 302/307 to an internal target).
+  -evil <host>      Fills {{EVIL}} in host-poisoning payloads - the attacker host
+                    you want reflected (password-reset / cache poisoning). If
+                    empty but -oob is set, a unique OOB subdomain is used instead.
+  -itarget <addr>   Fills {{TARGET}} - the internal address you want to wrap in
+                    bypass payloads (default 127.0.0.1).
 
 DETECTION:
-  -match string    Extra body signatures (comma-separated), treated as strong hits.
-  -probe           Host mode: probe each header with canaries first and skip the
-                   ones with no visible effect (core SSRF headers are always kept).
-                   Cuts wasted requests; may miss blind-only headers (use -oob then).
-  -lenpct int      Body-length delta threshold in %% to flag (default 25).
-  -oob string      interactsh base domain for blind detection (e.g. abc.oast.fun).
-  -oobmap string   File for the OOB correlation map (default oob-map-<ts>.txt).
+  -match <list>     Extra response-body signatures (comma-separated) counted as
+                    strong hits, e.g. -match "ADMIN PANEL,Jenkins". Use when the
+                    success indicator is app-specific and the built-in markers
+                    (/etc/passwd, cloud creds, service banners) don't cover it.
+  -lenpct <n>       Flag a response when its body length differs from the baseline
+                    by at least n percent (default 25). Lower = more sensitive,
+                    noisier; raise it on chatty/dynamic pages.
+  -probe            Host mode only: first probe each header with canaries and drop
+                    the headers that show no visible effect, instead of firing the
+                    whole dictionary at all ~55 of them. Core SSRF headers (Host,
+                    X-Forwarded-Host, X-Forwarded-For, ...) are always kept. Big
+                    request savings; can miss blind-only headers, so pair with -oob.
+  -oob <domain>     interactsh base domain (e.g. abc.oast.fun) for blind SSRF /
+                    poisoning. Each payload gets a unique subdomain; a callback in
+                    your interactsh-client proves the server reached out even when
+                    the HTTP response looks normal. Run interactsh-client yourself.
+  -oobmap <file>    Where to write the "subdomain -> payload" map so you can tell
+                    which payload a callback came from (default oob-map-<ts>.txt).
 
-RATE CONTROL / SAFETY:
-  -c int           Concurrent workers (default 10).
-  -rate float      Global requests/sec (default 25; 0 = unlimited, use with care).
-  -delay duration  Delay before each request (e.g. 200ms).
-  -jitter duration Random extra delay up to this value.
-  -timeout duration Per-request timeout (default 10s).
-  -max int         Abort before start if case count exceeds this (0 = no cap).
-  -max-errors int  Circuit breaker: consecutive errors / sustained slow responses
-                   before auto-stop (default 25). Ctrl-C stops gracefully too.
+RATE CONTROL / SAFETY (don't turn this into a DoS):
+  -rate <float>     Global requests/sec across all workers (default 25). This is
+                    the main throttle; 0 = unlimited (prints a warning - only on
+                    a target you know can take it).
+  -c <n>            Concurrent workers (default 10). Parallelism cap; -rate still
+                    bounds the overall request rate.
+  -delay <dur>      Fixed pause before each request (e.g. 200ms) - be gentle on
+                    fragile targets.
+  -jitter <dur>     Random extra pause up to this value, added to -delay, to look
+                    less like a flat scan.
+  -timeout <dur>    Per-request timeout (default 10s).
+  -max <n>          Refuse to start if the run would generate more than n cases
+                    (0 = no cap). A seatbelt against an accidental 60k-request run.
+  -max-errors <n>   Circuit breaker: after n consecutive request errors, or n
+                    sustained very-slow responses, stop automatically - the target
+                    is likely degrading (default 25). Ctrl-C also stops cleanly.
 
 OUTPUT:
-  -v               Print all results, not only interesting ones.
-  -o string        Write results as JSONL to this file.
-  -k               Skip TLS certificate verification (default true).
+  -v                Print every result, not just the interesting ones.
+  -o <file>         Write full results as JSON Lines to a file (for grep/jq).
+  -k                Skip TLS certificate verification (default true) - targets
+                    often have self-signed certs.
 
 EXAMPLES:
+  # SSRF on a specific parameter, confirm blind hits via interactsh
   ssrfuzz -r req.txt -mode ssrf -p imageUrl -oob abc.oast.fun -rate 15
-  ssrfuzz -r req.txt -mode host -evil evil.attacker.com -match "ADMIN PANEL" -rate 20
-  ssrfuzz -r req.txt -mode host -sweep private -rate 10 -c 5
+  # let the tool find SSRF-candidate parameters itself
+  ssrfuzz -r req.txt -list-params
+  ssrfuzz -r req.txt -mode ssrf -p auto
+  # Host-Header attacks, prune dead headers, match the admin indicator
+  ssrfuzz -r req.txt -mode host -probe -match "ADMIN PANEL" -rate 20
+  # routing-based SSRF: internal IPs x internal paths
+  ssrfuzz -r req.txt -mode host -probe -sweep private -paths default -rate 10
+  # port-scan localhost through a confirmed SSRF
+  ssrfuzz -r req.txt -mode ssrf -p url -ports top
+  # everything, piped through Burp for manual review
   ssrfuzz -r req.txt -mode both -proxy 127.0.0.1:8080 -v
 `
 
