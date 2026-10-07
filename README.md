@@ -28,6 +28,8 @@ and non-standard request headers — which `net/http` would normalize away.
   `-match` strings + blind confirmation via interactsh (OOB)
 - `-probe`: skip headers with no visible effect, keep core SSRF headers
 - `-sweep`: last-octet sweep of private /24 ranges (routing-based SSRF)
+- `-path`/`-paths`: replay routing-based SSRF across internal paths (`/admin`,
+  `/internal`, `/dashboard`, … or your own list)
 - Rate control: `-rate` (req/s), `-c` (workers), `-delay`/`-jitter`
 - Proxy through Burp (`-proxy`)
 - JSONL output (`-o`)
@@ -57,6 +59,9 @@ ssrfuzz -r req.txt -mode host -evil evil.attacker.com -match "ADMIN PANEL" -rate
 
 # Host-Header with header probing (skip useless headers) and routing sweep
 ssrfuzz -r req.txt -mode host -probe -sweep private -rate 10 -c 5
+
+# Routing-based SSRF: internal IPs x internal paths
+ssrfuzz -r req.txt -mode host -probe -sweep private -paths default -rate 10
 
 # Everything, piped through Burp for manual review
 ssrfuzz -r req.txt -mode both -proxy 127.0.0.1:8080 -v

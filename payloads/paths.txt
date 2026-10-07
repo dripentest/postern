@@ -1,0 +1,74 @@
+# paths.txt
+# Common internal / admin paths for routing-based SSRF (-mode host with -paths).
+# Each host case is replayed against each of these request paths.
+# Lines starting with # and blank lines are ignored.
+
+# ---------- Admin / management ----------
+/admin
+/admin/
+/administrator
+/admin/login
+/admin/dashboard
+/dashboard
+/manage
+/management
+/console
+/panel
+/cpanel
+/webadmin
+/sysadmin
+/portal
+/backend
+/private
+/internal
+/intranet
+/secure
+/restricted
+
+# ---------- API / internal services ----------
+/api
+/api/
+/api/v1
+/api/internal
+/internal/api
+/actuator
+/actuator/health
+/actuator/env
+/actuator/mappings
+/metrics
+/debug
+/debug/vars
+/status
+/server-status
+/server-info
+/health
+/healthz
+/info
+/version
+
+# ---------- Auth / users ----------
+/login
+/logout
+/user
+/users
+/account
+/profile
+/settings
+/config
+/configuration
+
+# ---------- Infra / orchestration endpoints ----------
+/v1/
+/v2/
+/healthz
+/readyz
+/version
+/swagger
+/swagger-ui
+/swagger-ui.html
+/api-docs
+/graphql
+/graphiql
+/.git/config
+/.env
+/robots.txt

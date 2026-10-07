@@ -48,6 +48,8 @@ type config struct {
 	evil      string
 	itarget   string
 	sweep     string
+	path      string
+	paths     string
 	payloads  string
 	out       string
 	verbose   bool
@@ -94,6 +96,10 @@ PAYLOADS / PLACEHOLDERS:
   -sweep string    Last-octet sweep of /24 bases: "private"
                    (192.168.0,10.0.0,172.16.0,127.0.0) or a custom list
                    like "10.10.10,192.168.56".
+  -path string     Host mode: single request path (e.g. /admin), overrides the
+                   request path for routing-based SSRF.
+  -paths string    Host mode: path list - "default" (built-in paths.txt) or a
+                   file. Multiplies the host matrix by each path.
 
 DETECTION:
   -match string    Extra body signatures (comma-separated), treated as strong hits.
@@ -152,6 +158,8 @@ func parseFlags() *config {
 	flag.StringVar(&cfg.evil, "evil", "", "value for {{EVIL}} host poisoning (else OOB)")
 	flag.StringVar(&cfg.itarget, "itarget", "127.0.0.1", "value for {{TARGET}} internal address")
 	flag.StringVar(&cfg.sweep, "sweep", "", "last-octet /24 sweep: 'private' or custom list like '10.10.10,192.168.56'")
+	flag.StringVar(&cfg.path, "path", "", "host mode: single request path to use (e.g. /admin), overrides the request path")
+	flag.StringVar(&cfg.paths, "paths", "", "host mode: path list - 'default' (built-in paths.txt) or a file; multiplies the host matrix")
 	flag.StringVar(&cfg.payloads, "payloads", "payloads", "directory with payload files")
 	flag.StringVar(&cfg.out, "o", "", "write results as JSONL to this file")
 	flag.BoolVar(&cfg.verbose, "v", false, "print all results, not only interesting")
@@ -255,7 +263,11 @@ func run(cfg *config) error {
 		if cfg.probe {
 			allow = probeHeaders(cfg, base, sopts, bl, markers)
 		}
-		hc, err := gen.Host(cfg.payloads, params, mapper, allow)
+		pathList, err := resolvePaths(cfg)
+		if err != nil {
+			return err
+		}
+		hc, err := gen.Host(cfg.payloads, params, mapper, allow, pathList)
 		if err != nil {
 			return err
 		}
@@ -450,26 +462,59 @@ func buildRequest(base *rawreq.Request, c gen.Case, param string, useTLS bool, l
 		}
 		return base.InjectMarker(c.Payload), nil
 	}
+	var r *rawreq.Request
 	switch c.Variant {
 	case "replace":
-		return base.WithHostReplaced(c.Payload), nil
+		r = base.WithHostReplaced(c.Payload)
 	case "dup":
-		return base.WithDupHost(c.Payload), nil
+		r = base.WithDupHost(c.Payload)
 	case "add":
-		return base.WithAddedHeader(c.Header, c.Payload), nil
+		r = base.WithAddedHeader(c.Header, c.Payload)
 	case "absolute":
+		r = base.WithHostReplaced(c.Payload)
+	default:
+		r = base.Clone()
+	}
+	if c.Path != "" {
+		r.Target = c.Path
+	}
+	if c.Variant == "absolute" && !strings.HasPrefix(r.Target, "http://") && !strings.HasPrefix(r.Target, "https://") {
 		scheme := "http"
 		if useTLS {
 			scheme = "https"
 		}
-		r := base.WithHostReplaced(c.Payload)
-		if !strings.HasPrefix(r.Target, "http://") && !strings.HasPrefix(r.Target, "https://") {
-			r.Target = scheme + "://" + legitHost + r.Target
-		}
-		return r, nil
-	default:
-		return base.Clone(), nil
+		r.Target = scheme + "://" + legitHost + r.Target
 	}
+	return r, nil
+}
+
+func resolvePaths(cfg *config) ([]string, error) {
+	if cfg.paths != "" {
+		var path string
+		switch strings.ToLower(cfg.paths) {
+		case "default", "all":
+			path = filepath.Join(cfg.payloads, "paths.txt")
+		default:
+			path = cfg.paths
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read -paths: %w", err)
+		}
+		var out []string
+		for _, ln := range strings.Split(string(b), "\n") {
+			ln = strings.TrimSpace(strings.TrimRight(ln, "\r"))
+			if ln == "" || strings.HasPrefix(ln, "#") {
+				continue
+			}
+			out = append(out, ln)
+		}
+		return out, nil
+	}
+	if cfg.path != "" {
+		return []string{cfg.path}, nil
+	}
+	return nil, nil
 }
 
 func writeJSON(f *os.File, mu *sync.Mutex, c gen.Case, res sender.Result, sig detect.Signal, buildErr error) {

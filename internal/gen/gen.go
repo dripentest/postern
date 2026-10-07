@@ -29,6 +29,7 @@ type Case struct {
 	Payload string
 	Header  string
 	Variant string
+	Path    string
 	OOB     string
 	Label   string
 }
@@ -69,7 +70,7 @@ func LoadHostHeaders(dir string) ([]string, error) {
 	return loadLines(filepath.Join(dir, "host-headers.txt"))
 }
 
-func Host(dir string, p Params, o OOB, allow map[string]bool) ([]Case, error) {
+func Host(dir string, p Params, o OOB, allow map[string]bool, paths []string) ([]Case, error) {
 	headers, err := loadLines(filepath.Join(dir, "host-headers.txt"))
 	if err != nil {
 		return nil, err
@@ -80,6 +81,9 @@ func Host(dir string, p Params, o OOB, allow map[string]bool) ([]Case, error) {
 	}
 
 	values = append(values, sweepIPs(p.Sweep)...)
+	if len(paths) == 0 {
+		paths = []string{""}
+	}
 
 	var cases []Case
 	n := 0
@@ -100,17 +104,22 @@ func Host(dir string, p Params, o OOB, allow map[string]bool) ([]Case, error) {
 				variants = [][2]string{{"add", "add " + h}}
 			}
 			for _, v := range variants {
-				id := fmt.Sprintf("h%04d", n)
-				val, oobHost, skip := expand(rawv, id, p, o)
-				if skip {
-					continue
+				for _, path := range paths {
+					id := fmt.Sprintf("h%04d", n)
+					val, oobHost, skip := expand(rawv, id, p, o)
+					if skip {
+						continue
+					}
+					n++
+					label := fmt.Sprintf("%s: %s [%s]", h, val, v[0])
+					if path != "" {
+						label += " " + path
+					}
+					if oobHost != "" {
+						o.Record(id, label)
+					}
+					cases = append(cases, Case{ID: id, Mode: "host", Source: "host", Payload: val, Header: h, Variant: v[0], Path: path, OOB: oobHost, Label: label})
 				}
-				n++
-				label := fmt.Sprintf("%s: %s [%s]", h, val, v[0])
-				if oobHost != "" {
-					o.Record(id, label)
-				}
-				cases = append(cases, Case{ID: id, Mode: "host", Source: "host", Payload: val, Header: h, Variant: v[0], OOB: oobHost, Label: label})
 			}
 		}
 	}
