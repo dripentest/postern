@@ -30,6 +30,7 @@ type Case struct {
 	Header  string
 	Variant string
 	Path    string
+	Param   string
 	OOB     string
 	Label   string
 }

@@ -18,8 +18,10 @@ and non-standard request headers — which `net/http` would normalize away.
 
 - Raw HTTP request as input (saved from Burp "Copy to file")
 - Modes: `ssrf`, `host`, `both`
-- Fuzz a parameter by name (`-p imageUrl`) or by a `FUZZ` marker,
-  in query / form-urlencoded / JSON / **multipart** bodies
+- Fuzz a parameter by name (`-p imageUrl`), auto-discover SSRF candidates
+  (`-p auto`), fuzz every parameter (`-p all`), or use a `FUZZ` marker —
+  across query / form-urlencoded / JSON / **multipart** bodies
+- `-list-params` to enumerate request parameters (candidates marked) for recon
 - Comprehensive payloads: localhost bypasses, IP encodings (dec/oct/hex/IPv6),
   cloud metadata (AWS/GCP/Azure/DO/Alibaba/OCI/k8s), dangerous schemes
   (`file`/`gopher`/`dict`/PHP wrappers), redirect + DNS rebinding
@@ -84,6 +86,10 @@ ssrfuzz -r get-admin.txt -mode host -match "ADMIN"
 # 3. Found an interesting parameter? Copy the full request from Burp,
 #    point -p at it, and let the SSRF dictionary run (no manual ffuf edits)
 ssrfuzz -r upload.txt -mode ssrf -p imageUrl -oob abc.oast.fun
+
+# ...or let the tool find the SSRF-candidate params itself
+ssrfuzz -r req.txt -list-params            # recon: what's in the request
+ssrfuzz -r req.txt -mode ssrf -p auto      # fuzz the candidates
 ```
 
 ## Safety / not a DoS tool

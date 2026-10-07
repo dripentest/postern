@@ -136,6 +136,101 @@ func (r *Request) HasParam(name string) bool {
 	return err == nil
 }
 
+type Param struct {
+	Name  string
+	Loc   string
+	Value string
+}
+
+func (r *Request) DiscoverParams() []Param {
+	var out []Param
+	seen := map[string]bool{}
+	add := func(name, loc, val string) {
+		if name == "" || seen[loc+":"+name] {
+			return
+		}
+		seen[loc+":"+name] = true
+		out = append(out, Param{Name: name, Loc: loc, Value: val})
+	}
+
+	if i := strings.IndexByte(r.Target, '?'); i >= 0 {
+		for _, kv := range strings.Split(r.Target[i+1:], "&") {
+			if kv == "" {
+				continue
+			}
+			p := strings.SplitN(kv, "=", 2)
+			v := ""
+			if len(p) > 1 {
+				v, _ = url.QueryUnescape(p[1])
+			}
+			add(p[0], "query", v)
+		}
+	}
+
+	ct := strings.ToLower(r.HeaderValue("Content-Type"))
+	body := string(r.Body)
+
+	if strings.Contains(ct, "x-www-form-urlencoded") || looksForm(body) {
+		for _, kv := range strings.Split(body, "&") {
+			if kv == "" {
+				continue
+			}
+			p := strings.SplitN(kv, "=", 2)
+			v := ""
+			if len(p) > 1 {
+				v, _ = url.QueryUnescape(p[1])
+			}
+			add(p[0], "form", v)
+		}
+	}
+
+	if strings.Contains(ct, "json") || looksJSON(body) {
+		var val interface{}
+		if json.Unmarshal(r.Body, &val) == nil {
+			var walk func(x interface{})
+			walk = func(x interface{}) {
+				switch t := x.(type) {
+				case map[string]interface{}:
+					for k, v := range t {
+						switch vv := v.(type) {
+						case string:
+							add(k, "json", vv)
+						case float64:
+							add(k, "json", fmt.Sprint(vv))
+						case bool:
+							add(k, "json", fmt.Sprint(vv))
+						default:
+							walk(v)
+						}
+					}
+				case []interface{}:
+					for _, e := range t {
+						walk(e)
+					}
+				}
+			}
+			walk(val)
+		}
+	}
+
+	if strings.Contains(ct, "multipart/form-data") {
+		if _, params, err := mime.ParseMediaType(r.HeaderValue("Content-Type")); err == nil {
+			mr := multipart.NewReader(bytes.NewReader(r.Body), params["boundary"])
+			for {
+				part, err := mr.NextPart()
+				if err != nil {
+					break
+				}
+				content, _ := io.ReadAll(part)
+				add(part.FormName(), "multipart", string(content))
+				part.Close()
+			}
+		}
+	}
+
+	return out
+}
+
 func (r *Request) InjectParam(name, payload string) (*Request, error) {
 	if i := strings.IndexByte(r.Target, '?'); i >= 0 {
 		path, rawq := r.Target[:i], r.Target[i+1:]

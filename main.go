@@ -33,35 +33,47 @@ func (h *headerList) Set(v string) error {
 }
 
 type config struct {
-	reqFile   string
-	mode      string
-	param     string
-	urlFlag   string
-	tls       bool
-	proxy     string
-	conc      int
-	rate      float64
-	delay     time.Duration
-	jitter    time.Duration
-	timeout   time.Duration
-	insecure  bool
-	oobBase   string
-	oobMap    string
-	lhost     string
-	evil      string
-	itarget   string
-	sweep     string
-	path      string
-	paths     string
-	payloads  string
-	out       string
-	verbose   bool
-	lenPct    int
-	match     string
-	probe     bool
-	max       int
-	maxErrors int
-	extraHdrs headerList
+	reqFile    string
+	mode       string
+	param      string
+	urlFlag    string
+	tls        bool
+	proxy      string
+	conc       int
+	rate       float64
+	delay      time.Duration
+	jitter     time.Duration
+	timeout    time.Duration
+	insecure   bool
+	oobBase    string
+	oobMap     string
+	lhost      string
+	evil       string
+	itarget    string
+	sweep      string
+	path       string
+	paths      string
+	payloads   string
+	out        string
+	verbose    bool
+	lenPct     int
+	match      string
+	probe      bool
+	max        int
+	maxErrors  int
+	listParams bool
+	extraHdrs  headerList
+}
+
+var ssrfParamKeywords = []string{
+	"url", "uri", "urn", "link", "src", "source", "dest", "destination",
+	"redirect", "redir", "return", "returnto", "returnurl", "rurl", "next",
+	"continue", "forward", "callback", "webhook", "hook", "feed", "host",
+	"hostname", "domain", "site", "server", "port", "path", "file", "filename",
+	"filepath", "folder", "dir", "document", "data", "reference", "ref", "load",
+	"fetch", "remote", "target", "proxy", "image", "img", "avatar", "photo",
+	"upload", "download", "page", "view", "window", "open", "endpoint",
+	"location", "addr", "address", "to", "from",
 }
 
 var coreHeaders = map[string]bool{
@@ -86,8 +98,10 @@ MODES:
 
 TARGETING:
   -r string        Raw HTTP request file (saved from Burp "Copy to file"). Required.
-  -p string        Parameter name to fuzz (query / form-urlencoded / JSON body).
+  -p string        Parameter to fuzz (query / form-urlencoded / JSON / multipart):
+                   a name, "auto" (SSRF-candidate params), or "all" (every param).
                    If omitted in ssrf mode, a literal FUZZ marker is used.
+  -list-params     Discover and print request parameters (candidates marked), then exit.
   -url string      Override target as scheme://host[:port] (else taken from Host header).
   -tls             Force TLS when -url is not given.
   -proxy string    HTTP proxy host:port (e.g. Burp 127.0.0.1:8080).
@@ -150,7 +164,8 @@ func parseFlags() *config {
 	flag.Usage = func() { fmt.Fprint(os.Stderr, usageText) }
 	flag.StringVar(&cfg.reqFile, "r", "", "raw HTTP request file (required)")
 	flag.StringVar(&cfg.mode, "mode", "ssrf", "mode: ssrf | host | both")
-	flag.StringVar(&cfg.param, "p", "", "parameter name to fuzz (ssrf); else FUZZ marker is used")
+	flag.StringVar(&cfg.param, "p", "", "parameter to fuzz (ssrf): a name, 'auto' (SSRF-candidate params), or 'all'; else FUZZ marker")
+	flag.BoolVar(&cfg.listParams, "list-params", false, "discover and print request parameters (candidates marked), then exit")
 	flag.StringVar(&cfg.urlFlag, "url", "", "override target: scheme://host[:port]")
 	flag.BoolVar(&cfg.tls, "tls", false, "target over TLS (when -url not given)")
 	flag.StringVar(&cfg.proxy, "proxy", "", "HTTP proxy host:port (e.g. Burp 127.0.0.1:8080)")
@@ -214,13 +229,44 @@ func run(cfg *config) error {
 		base.UpsertHeader(strings.TrimSpace(h[:ci]), strings.TrimSpace(h[ci+1:]))
 	}
 
+	if cfg.listParams {
+		printParams(base.DiscoverParams())
+		return nil
+	}
+
+	var targetParams []string
+	useMarker := false
 	if cfg.mode == "ssrf" || cfg.mode == "both" {
-		if cfg.param != "" {
-			if !base.HasParam(cfg.param) {
-				return fmt.Errorf("parameter %q not found in request (query/form/json)", cfg.param)
+		switch cfg.param {
+		case "":
+			if !base.HasMarker() {
+				return fmt.Errorf("ssrf mode needs -p <param|auto|all> or a FUZZ marker in the request")
 			}
-		} else if !base.HasMarker() {
-			return fmt.Errorf("ssrf mode needs -p <param> or a FUZZ marker in the request")
+			useMarker = true
+		case "auto", "all":
+			disc := base.DiscoverParams()
+			if len(disc) == 0 {
+				return fmt.Errorf("no parameters discovered; place a FUZZ marker or use -p <name>")
+			}
+			seen := map[string]bool{}
+			for _, p := range disc {
+				if seen[p.Name] {
+					continue
+				}
+				if cfg.param == "all" || isCandidate(p) {
+					seen[p.Name] = true
+					targetParams = append(targetParams, p.Name)
+				}
+			}
+			if len(targetParams) == 0 {
+				return fmt.Errorf("no SSRF-candidate parameters found; use -p all or -p <name> (run -list-params to see them)")
+			}
+			fmt.Printf("[*] fuzzing %d parameter(s): %s\n", len(targetParams), strings.Join(targetParams, ", "))
+		default:
+			if !base.HasParam(cfg.param) {
+				return fmt.Errorf("parameter %q not found in request (query/form/json/multipart)", cfg.param)
+			}
+			targetParams = []string{cfg.param}
 		}
 	}
 
@@ -266,7 +312,17 @@ func run(cfg *config) error {
 		if err != nil {
 			return err
 		}
-		cases = append(cases, sc...)
+		if useMarker {
+			cases = append(cases, sc...)
+		} else {
+			for _, pname := range targetParams {
+				for _, c := range sc {
+					c.Param = pname
+					c.Label = pname + "=" + c.Payload
+					cases = append(cases, c)
+				}
+			}
+		}
 	}
 	if cfg.mode == "host" || cfg.mode == "both" {
 		var allow map[string]bool
@@ -515,6 +571,33 @@ func printClusters(clusters map[string]*cluster) {
 	}
 }
 
+func isCandidate(p rawreq.Param) bool {
+	name := strings.ToLower(p.Name)
+	for _, kw := range ssrfParamKeywords {
+		if strings.Contains(name, kw) {
+			return true
+		}
+	}
+	v := strings.ToLower(strings.TrimSpace(p.Value))
+	return strings.Contains(v, "://") || strings.HasPrefix(v, "http") || strings.HasPrefix(v, "//") || strings.HasPrefix(v, "/")
+}
+
+func printParams(ps []rawreq.Param) {
+	if len(ps) == 0 {
+		fmt.Println("[*] no parameters discovered (query/form/json/multipart)")
+		return
+	}
+	fmt.Printf("[*] discovered %d parameter(s):\n", len(ps))
+	for _, p := range ps {
+		tag := " "
+		if isCandidate(p) {
+			tag = "*"
+		}
+		fmt.Printf("  %s %-9s %-24s = %s\n", tag, p.Loc, p.Name, short(p.Value, 40))
+	}
+	fmt.Println("  (* = SSRF candidate; fuzz with -p auto, or -p all for every param)")
+}
+
 func probeHeaders(cfg *config, base *rawreq.Request, sopts sender.Options, bl detect.Baseline, markers []string) map[string]bool {
 	headers, err := gen.LoadHostHeaders(cfg.payloads)
 	if err != nil {
@@ -572,8 +655,12 @@ func randToken() string {
 
 func buildRequest(base *rawreq.Request, c gen.Case, param string, useTLS bool, legitHost string) (*rawreq.Request, error) {
 	if c.Mode == "ssrf" {
-		if param != "" {
-			return base.InjectParam(param, c.Payload)
+		p := c.Param
+		if p == "" {
+			p = param
+		}
+		if p != "" {
+			return base.InjectParam(p, c.Payload)
 		}
 		return base.InjectMarker(c.Payload), nil
 	}
