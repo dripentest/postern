@@ -1,0 +1,63 @@
+# host-headers.txt
+# Имена заголовков для Host-Header / routing-based атак (режим -mode host).
+# Каждый из них движок перебирает в паре с каждым значением из host-values.txt.
+# Строки с # и пустые игнорируются.
+
+# ---------- Канонический ----------
+Host
+
+# ---------- X-Forwarded-* семейство ----------
+X-Forwarded-Host
+X-Forwarded-For
+X-Forwarded-Server
+X-Forwarded
+X-Forward-For
+X-Forwarded-Proto
+X-Forwarded-Scheme
+X-Forwarded-Port
+X-Original-Forwarded-For
+
+# ---------- Host override ----------
+X-Host
+X-Original-Host
+X-Original-URL
+X-Rewrite-URL
+X-HTTP-Host-Override
+X-Forwarded-Host-Override
+X-Override-Host
+X-Backend-Host
+X-Backend-Server
+
+# ---------- Client-IP семейство (SSRF/ACL bypass) ----------
+X-Client-IP
+X-Real-IP
+X-Remote-IP
+X-Remote-Addr
+X-ProxyUser-Ip
+X-Cluster-Client-IP
+Client-IP
+True-Client-IP
+CF-Connecting-IP
+Fastly-Client-IP
+X-Azure-ClientIP
+X-Azure-SocketIP
+X-OVH-Forwarded
+
+# ---------- RFC 7239 ----------
+Forwarded
+
+# ---------- Прочие routing-заголовки ----------
+X-Forwarded-Path
+X-Original-Remote-Addr
+X-Remote-User
+Base-Url
+Http-Url
+Proxy-Host
+Proxy-Url
+Request-Uri
+Redirect
+Referer
+Destination
+X-Custom-IP-Authorization
+X-WAP-Profile
+Profile

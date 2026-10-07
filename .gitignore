@@ -1,0 +1,23 @@
+# build artifacts
+/ssrfuzz
+/ssrfuzz.exe
+/dist/
+*.o
+*.a
+
+# engagement data — НИКОГДА не коммитить цели/результаты/сырые запросы
+*.req
+req*.txt
+raw/
+out/
+results/
+*.jsonl
+*.csv
+oob-map-*.txt
+scope.txt
+
+# editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp

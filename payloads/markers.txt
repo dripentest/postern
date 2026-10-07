@@ -1,0 +1,63 @@
+# markers.txt
+# Сигнатуры успешного SSRF/чтения в ТЕЛЕ ответа (детект-движок, -mode ssrf/both).
+# Если хоть одна строка найдена в теле ответа на payload (но НЕ в baseline) —
+# результат помечается как STRONG hit. Регистронезависимо. Это подстроки, не regex.
+# Строки с # и пустые игнорируются.
+
+# ---------- /etc/passwd, /etc/hosts ----------
+root:x:0:0
+daemon:x:1:1
+/bin/bash
+/sbin/nologin
+127.0.0.1	localhost
+ip6-localhost
+
+# ---------- AWS metadata ----------
+ami-id
+instance-id
+instance-type
+iam/security-credentials
+AccessKeyId
+SecretAccessKey
+"Token"
+security-credentials
+
+# ---------- GCP metadata ----------
+computeMetadata
+"email":
+service-accounts
+oauth2/token
+"access_token"
+
+# ---------- Azure metadata ----------
+"compute":
+"vmId"
+"subscriptionId"
+
+# ---------- Redis / Memcached баннеры ----------
+redis_version
+# memcached stats
+STAT pid
+STAT version
+-ERR wrong number of arguments
++PONG
+
+# ---------- SSH / FTP / SMTP баннеры ----------
+SSH-2.0
+SSH-1.99
+220 (vsFTPd
+220 ProFTPD
+331 Please specify the password
+ESMTP
+
+# ---------- Windows ----------
+[extensions]
+[fonts]
+; for 16-bit app support
+
+# ---------- Общие признаки внутреннего доступа ----------
+Index of /
+Directory listing for
+<title>phpMyAdmin
+Server: gunicorn
+X-Powered-By: Express
