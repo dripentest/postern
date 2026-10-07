@@ -18,14 +18,19 @@ and non-standard request headers — which `net/http` would normalize away.
 
 - Raw HTTP request as input (saved from Burp "Copy to file")
 - Modes: `ssrf`, `host`, `both`
-- Fuzz a parameter by name (`-p imageUrl`) or by a `FUZZ` marker
+- Fuzz a parameter by name (`-p imageUrl`) or by a `FUZZ` marker,
+  in query / form-urlencoded / JSON / **multipart** bodies
 - Comprehensive payloads: localhost bypasses, IP encodings (dec/oct/hex/IPv6),
   cloud metadata (AWS/GCP/Azure/DO/Alibaba/OCI/k8s), dangerous schemes
   (`file`/`gopher`/`dict`/PHP wrappers), redirect + DNS rebinding
 - Host-Header techniques: replace Host, duplicate Host, absolute-URI, and
   override headers (`X-Forwarded-Host`, `X-Host`, `Forwarded`, …)
 - Detection: baseline diff (status/length/body) + body signatures + custom
-  `-match` strings + blind confirmation via interactsh (OOB)
+  `-match` strings + **payload reflection** (body and response headers like
+  `Location`) + blind confirmation via interactsh (OOB)
+- Response clustering (rare-first) to triage huge runs at a glance
+- Built-in anti-DoS: default rate cap, volume/ETA preview, circuit breaker,
+  graceful Ctrl-C
 - `-probe`: skip headers with no visible effect, keep core SSRF headers
 - `-sweep`: last-octet sweep of private /24 ranges (routing-based SSRF)
 - `-path`/`-paths`: replay routing-based SSRF across internal paths (`/admin`,
@@ -66,6 +71,32 @@ ssrfuzz -r req.txt -mode host -probe -sweep private -paths default -rate 10
 # Everything, piped through Burp for manual review
 ssrfuzz -r req.txt -mode both -proxy 127.0.0.1:8080 -v
 ```
+
+## Typical workflow
+
+```bash
+# 1. Host-Header attacks on the landing page
+ssrfuzz -r get-root.txt -mode host -probe
+
+# 2. If there's an admin area, check Host-based auth bypass there
+ssrfuzz -r get-admin.txt -mode host -match "ADMIN"
+
+# 3. Found an interesting parameter? Copy the full request from Burp,
+#    point -p at it, and let the SSRF dictionary run (no manual ffuf edits)
+ssrfuzz -r upload.txt -mode ssrf -p imageUrl -oob abc.oast.fun
+```
+
+## Safety / not a DoS tool
+
+Against a target you were contracted to test, hammering it into the ground is the
+worst outcome. Guardrails are built in:
+
+- `-rate` defaults to 25 req/s (set `-rate 0` for unlimited — with a warning)
+- the estimated request count and duration print before the run starts
+- `-max` aborts before start if the case count is too large
+- a circuit breaker auto-stops on sustained errors or latency blowup
+  (`-max-errors`), i.e. when the target starts to degrade
+- Ctrl-C stops gracefully with a partial summary
 
 ## Payload files
 

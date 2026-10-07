@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/url"
 	"strconv"
 	"strings"
@@ -159,7 +162,14 @@ func (r *Request) InjectParam(name, payload string) (*Request, error) {
 			return c, nil
 		}
 	}
-	return nil, fmt.Errorf("parameter %q not found in query/form/json body", name)
+	if strings.Contains(ct, "multipart/form-data") {
+		if nb, ok := replaceMultipart(r.Body, r.HeaderValue("Content-Type"), name, payload); ok {
+			c := r.Clone()
+			c.SetBody(nb)
+			return c, nil
+		}
+	}
+	return nil, fmt.Errorf("parameter %q not found in query/form/json/multipart body", name)
 }
 
 func (r *Request) InjectMarker(payload string) *Request {
@@ -256,6 +266,52 @@ func replaceJSONString(body, name, payload string) (string, bool) {
 		return body, false
 	}
 	return string(nb), true
+}
+
+func replaceMultipart(body []byte, ct, name, payload string) ([]byte, bool) {
+	_, params, err := mime.ParseMediaType(ct)
+	if err != nil {
+		return nil, false
+	}
+	boundary := params["boundary"]
+	if boundary == "" {
+		return nil, false
+	}
+	mr := multipart.NewReader(bytes.NewReader(body), boundary)
+	var buf bytes.Buffer
+	w := multipart.NewWriter(&buf)
+	if err := w.SetBoundary(boundary); err != nil {
+		return nil, false
+	}
+	found := false
+	for {
+		part, err := mr.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, false
+		}
+		content, _ := io.ReadAll(part)
+		pw, err := w.CreatePart(part.Header)
+		if err != nil {
+			return nil, false
+		}
+		if part.FormName() == name {
+			pw.Write([]byte(payload))
+			found = true
+		} else {
+			pw.Write(content)
+		}
+		part.Close()
+	}
+	if err := w.Close(); err != nil {
+		return nil, false
+	}
+	if !found {
+		return nil, false
+	}
+	return buf.Bytes(), true
 }
 
 func looksForm(b string) bool {

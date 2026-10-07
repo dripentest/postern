@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -8,7 +9,9 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -56,6 +59,8 @@ type config struct {
 	lenPct    int
 	match     string
 	probe     bool
+	max       int
+	maxErrors int
 	extraHdrs headerList
 }
 
@@ -110,12 +115,15 @@ DETECTION:
   -oob string      interactsh base domain for blind detection (e.g. abc.oast.fun).
   -oobmap string   File for the OOB correlation map (default oob-map-<ts>.txt).
 
-RATE CONTROL:
+RATE CONTROL / SAFETY:
   -c int           Concurrent workers (default 10).
-  -rate float      Global requests/sec (0 = unlimited).
+  -rate float      Global requests/sec (default 25; 0 = unlimited, use with care).
   -delay duration  Delay before each request (e.g. 200ms).
   -jitter duration Random extra delay up to this value.
   -timeout duration Per-request timeout (default 10s).
+  -max int         Abort before start if case count exceeds this (0 = no cap).
+  -max-errors int  Circuit breaker: consecutive errors / sustained slow responses
+                   before auto-stop (default 25). Ctrl-C stops gracefully too.
 
 OUTPUT:
   -v               Print all results, not only interesting ones.
@@ -147,7 +155,7 @@ func parseFlags() *config {
 	flag.BoolVar(&cfg.tls, "tls", false, "target over TLS (when -url not given)")
 	flag.StringVar(&cfg.proxy, "proxy", "", "HTTP proxy host:port (e.g. Burp 127.0.0.1:8080)")
 	flag.IntVar(&cfg.conc, "c", 10, "concurrent workers")
-	flag.Float64Var(&cfg.rate, "rate", 0, "global requests/sec (0 = unlimited)")
+	flag.Float64Var(&cfg.rate, "rate", 25, "global requests/sec (0 = unlimited, use with care)")
 	flag.DurationVar(&cfg.delay, "delay", 0, "delay before each request (e.g. 200ms)")
 	flag.DurationVar(&cfg.jitter, "jitter", 0, "random extra delay up to this value")
 	flag.DurationVar(&cfg.timeout, "timeout", 10*time.Second, "per-request timeout")
@@ -166,6 +174,8 @@ func parseFlags() *config {
 	flag.IntVar(&cfg.lenPct, "lenpct", 25, "body-length delta threshold (%) to flag")
 	flag.StringVar(&cfg.match, "match", "", "extra body signatures (comma-separated), treated as strong hits")
 	flag.BoolVar(&cfg.probe, "probe", false, "host mode: probe each header first, skip the ones with no visible effect (keeps core headers)")
+	flag.IntVar(&cfg.max, "max", 0, "abort before start if case count exceeds this (0 = no cap)")
+	flag.IntVar(&cfg.maxErrors, "max-errors", 25, "circuit breaker: consecutive errors / sustained slow responses before auto-stop")
 	flag.Var(&cfg.extraHdrs, "H", "extra header for every request (repeatable): -H 'Name: Value'")
 	flag.Parse()
 	return cfg
@@ -277,11 +287,21 @@ func run(cfg *config) error {
 		return fmt.Errorf("no cases generated (check payload files and placeholders)")
 	}
 
+	if cfg.max > 0 && len(cases) > cfg.max {
+		return fmt.Errorf("case count %d exceeds -max %d; narrow scope (-probe, smaller -sweep/-paths) or raise -max", len(cases), cfg.max)
+	}
+
 	fmt.Printf("[*] cases: %d | workers: %d | rate: %.0f req/s", len(cases), cfg.conc, cfg.rate)
 	if mapper.Enabled() {
 		fmt.Printf(" | OOB: %s (map: %s)", cfg.oobBase, oobMapPath)
 	}
 	fmt.Println()
+	if cfg.rate > 0 {
+		eta := time.Duration(float64(len(cases)) / cfg.rate * float64(time.Second))
+		fmt.Printf("[*] estimated duration at %.0f req/s: ~%s\n", cfg.rate, eta.Round(time.Second))
+	} else {
+		fmt.Printf("[!] rate is UNLIMITED (-rate 0): this can overwhelm the target; Ctrl-C to abort\n")
+	}
 	fmt.Println(strings.Repeat("-", 72))
 
 	var outFile *os.File
@@ -293,12 +313,48 @@ func run(cfg *config) error {
 		defer outFile.Close()
 	}
 
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stopSignals()
+
 	var (
 		printMu       sync.Mutex
 		nSent, nErr   int64
 		nInt, nStrong int64
 		nOOB          int64
+		consecErr     int64
+		slowStreak    int64
+		tripped       int32
+		clMu          sync.Mutex
+		clusters      = map[string]*cluster{}
 	)
+
+	trip := func(reason string) {
+		if atomic.CompareAndSwapInt32(&tripped, 0, 1) {
+			printMu.Lock()
+			fmt.Printf("\n[!] circuit breaker: %s - stopping to avoid overloading the target\n", reason)
+			printMu.Unlock()
+			stopSignals()
+		}
+	}
+
+	recordCluster := func(sig, example string) {
+		clMu.Lock()
+		c := clusters[sig]
+		if c == nil {
+			c = &cluster{}
+			clusters[sig] = c
+		}
+		c.count++
+		if c.example == "" {
+			c.example = example
+		}
+		clMu.Unlock()
+	}
+
+	slowCut := bl.Dur * 10
+	if slowCut < 3*time.Second {
+		slowCut = 3 * time.Second
+	}
 
 	process := func(c gen.Case) {
 		req, err := buildRequest(base, c, cfg.param, useTLS, base.Host)
@@ -317,6 +373,10 @@ func run(cfg *config) error {
 
 		if res.Err != nil {
 			atomic.AddInt64(&nErr, 1)
+			recordCluster("ERR", short(c.Label, 50))
+			if atomic.AddInt64(&consecErr, 1) >= int64(cfg.maxErrors) {
+				trip(fmt.Sprintf("%d consecutive request errors", cfg.maxErrors))
+			}
 			if cfg.verbose {
 				printMu.Lock()
 				fmt.Printf("[err] %-6s %-40s %v\n", c.ID, short(c.Label, 40), res.Err)
@@ -325,8 +385,17 @@ func run(cfg *config) error {
 			writeJSON(outFile, &printMu, c, res, detect.Signal{}, err)
 			return
 		}
+		atomic.StoreInt64(&consecErr, 0)
+		if bl.Dur > 0 && res.Duration > slowCut {
+			if atomic.AddInt64(&slowStreak, 1) >= int64(cfg.maxErrors) {
+				trip("sustained latency blowup (target degrading)")
+			}
+		} else {
+			atomic.StoreInt64(&slowStreak, 0)
+		}
 
-		sig := detect.Analyze(bl, res.Status, res.Body, res.Duration, markers, cfg.lenPct)
+		recordCluster(fmt.Sprintf("%d/%d", res.Status, res.BodyLen), short(c.Label, 50))
+		sig := detect.Analyze(bl, res.Status, res.Body, res.Duration, markers, cfg.lenPct, c.Payload, res.Header)
 		if sig.Strong {
 			atomic.AddInt64(&nStrong, 1)
 		}
@@ -371,8 +440,17 @@ func run(cfg *config) error {
 		go func() {
 			defer wg.Done()
 			for c := range casesCh {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
 				if tickC != nil {
-					<-tickC
+					select {
+					case <-ctx.Done():
+						return
+					case <-tickC:
+					}
 				}
 				if cfg.delay > 0 || cfg.jitter > 0 {
 					d := cfg.delay
@@ -385,19 +463,56 @@ func run(cfg *config) error {
 			}
 		}()
 	}
+feed:
 	for _, c := range cases {
-		casesCh <- c
+		select {
+		case <-ctx.Done():
+			break feed
+		case casesCh <- c:
+		}
 	}
 	close(casesCh)
 	wg.Wait()
 
 	fmt.Println(strings.Repeat("-", 72))
+	if ctx.Err() != nil && atomic.LoadInt32(&tripped) == 0 {
+		fmt.Printf("[!] aborted by user (Ctrl-C)\n")
+	}
 	fmt.Printf("[*] done: sent=%d interesting=%d strong=%d errors=%d oob-sent=%d\n",
 		nSent, nInt, nStrong, nErr, nOOB)
+	printClusters(clusters)
 	if mapper.Enabled() {
 		fmt.Printf("[*] check interactsh-client for callbacks; payload mapping in %s\n", oobMapPath)
 	}
 	return nil
+}
+
+type cluster struct {
+	count   int
+	example string
+}
+
+func printClusters(clusters map[string]*cluster) {
+	if len(clusters) == 0 {
+		return
+	}
+	type kv struct {
+		sig string
+		c   *cluster
+	}
+	all := make([]kv, 0, len(clusters))
+	for s, c := range clusters {
+		all = append(all, kv{s, c})
+	}
+	sort.Slice(all, func(i, j int) bool { return all[i].c.count < all[j].c.count })
+	fmt.Printf("[*] response clusters (status/len, rare first) - %d unique:\n", len(all))
+	limit := len(all)
+	if limit > 20 {
+		limit = 20
+	}
+	for _, e := range all[:limit] {
+		fmt.Printf("    %6dx  %-14s  e.g. %s\n", e.c.count, e.sig, short(e.c.example, 50))
+	}
 }
 
 func probeHeaders(cfg *config, base *rawreq.Request, sopts sender.Options, bl detect.Baseline, markers []string) map[string]bool {
@@ -430,7 +545,7 @@ func probeHeaders(cfg *config, base *rawreq.Request, sopts sender.Options, bl de
 				live = true
 				break
 			}
-			if detect.Analyze(bl, res.Status, res.Body, res.Duration, markers, cfg.lenPct).Interesting {
+			if detect.Analyze(bl, res.Status, res.Body, res.Duration, markers, cfg.lenPct, "", nil).Interesting {
 				live = true
 				break
 			}

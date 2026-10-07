@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -14,10 +15,11 @@ type Baseline struct {
 	Hash    string
 	Dur     time.Duration
 	markers map[string]bool
+	body    string
 }
 
 func NewBaseline(status int, body []byte, dur time.Duration, markers []string) Baseline {
-	b := Baseline{Status: status, BodyLen: len(body), Hash: HashBody(body), Dur: dur, markers: map[string]bool{}}
+	b := Baseline{Status: status, BodyLen: len(body), Hash: HashBody(body), Dur: dur, markers: map[string]bool{}, body: string(body)}
 	low := strings.ToLower(string(body))
 	for _, m := range markers {
 		if m == "" {
@@ -36,7 +38,7 @@ type Signal struct {
 	Reasons     []string
 }
 
-func Analyze(b Baseline, status int, body []byte, dur time.Duration, markers []string, lenPct int) Signal {
+func Analyze(b Baseline, status int, body []byte, dur time.Duration, markers []string, lenPct int, reflect string, hdr http.Header) Signal {
 	var s Signal
 	low := strings.ToLower(string(body))
 
@@ -48,6 +50,23 @@ func Analyze(b Baseline, status int, body []byte, dur time.Duration, markers []s
 			s.Strong = true
 			s.Interesting = true
 			s.Reasons = append(s.Reasons, "marker:"+m)
+		}
+	}
+
+	if distinctive(reflect) {
+		if strings.Contains(string(body), reflect) && !strings.Contains(b.body, reflect) {
+			s.Strong = true
+			s.Interesting = true
+			s.Reasons = append(s.Reasons, "reflected-body")
+		}
+		for name, vals := range hdr {
+			for _, v := range vals {
+				if strings.Contains(v, reflect) {
+					s.Strong = true
+					s.Interesting = true
+					s.Reasons = append(s.Reasons, "reflected-header:"+name)
+				}
+			}
 		}
 	}
 
@@ -84,4 +103,8 @@ func Analyze(b Baseline, status int, body []byte, dur time.Duration, markers []s
 func HashBody(b []byte) string {
 	h := sha256.Sum256(b)
 	return hex.EncodeToString(h[:6])
+}
+
+func distinctive(s string) bool {
+	return len(s) >= 8 && strings.ContainsAny(s, "abcdefghijklmnopqrstuvwxyz") && strings.Contains(s, ".")
 }
