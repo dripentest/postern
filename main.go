@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -51,6 +52,8 @@ type config struct {
 	evil       string
 	itarget    string
 	sweep      string
+	ports      string
+	scanHost   string
 	path       string
 	paths      string
 	payloads   string
@@ -115,6 +118,12 @@ PAYLOADS / PLACEHOLDERS:
   -sweep string    Last-octet sweep of /24 bases: "private"
                    (192.168.0,10.0.0,172.16.0,127.0.0) or a custom list
                    like "10.10.10,192.168.56".
+  -ports string    Post-SSRF recon (ssrf mode): scan ports through the confirmed
+                   SSRF. Spec: "top", "all", CSV "80,6379", or range "1-1024".
+                   Ranges are reordered to try well-known/dev ports first. Open
+                   ports surface as rare response clusters.
+  -scan-host string Host to port-scan (default 127.0.0.1); or combine -ports with
+                   -sweep for a network scan (every swept IP x each port).
   -path string     Host mode: single request path (e.g. /admin), overrides the
                    request path for routing-based SSRF.
   -paths string    Host mode: path list - "default" (built-in paths.txt) or a
@@ -181,6 +190,8 @@ func parseFlags() *config {
 	flag.StringVar(&cfg.evil, "evil", "", "value for {{EVIL}} host poisoning (else OOB)")
 	flag.StringVar(&cfg.itarget, "itarget", "127.0.0.1", "value for {{TARGET}} internal address")
 	flag.StringVar(&cfg.sweep, "sweep", "", "last-octet /24 sweep: 'private' or custom list like '10.10.10,192.168.56'")
+	flag.StringVar(&cfg.ports, "ports", "", "post-SSRF scan: port spec 'top', CSV '80,6379', or range '1-1024' (ssrf mode)")
+	flag.StringVar(&cfg.scanHost, "scan-host", "", "post-SSRF scan: host to port-scan (default 127.0.0.1; or use -sweep for a network scan)")
 	flag.StringVar(&cfg.path, "path", "", "host mode: single request path to use (e.g. /admin), overrides the request path")
 	flag.StringVar(&cfg.paths, "paths", "", "host mode: path list - 'default' (built-in paths.txt) or a file; multiplies the host matrix")
 	flag.StringVar(&cfg.payloads, "payloads", "payloads", "directory with payload files")
@@ -287,7 +298,27 @@ func run(cfg *config) error {
 	}
 	defer mapper.Close()
 
-	params := gen.Params{LHOST: cfg.lhost, TARGET: cfg.itarget, EVIL: cfg.evil, HOST: sni, Sweep: parseSweep(cfg.sweep)}
+	ports, err := parsePorts(cfg.ports)
+	if err != nil {
+		return err
+	}
+	var scanHosts []string
+	if len(ports) > 0 {
+		switch {
+		case cfg.scanHost != "":
+			scanHosts = []string{cfg.scanHost}
+		case cfg.sweep != "":
+			for _, base := range parseSweep(cfg.sweep) {
+				base = strings.TrimSuffix(base, ".")
+				for i := 0; i <= 255; i++ {
+					scanHosts = append(scanHosts, fmt.Sprintf("%s.%d", base, i))
+				}
+			}
+		default:
+			scanHosts = []string{"127.0.0.1"}
+		}
+	}
+	params := gen.Params{LHOST: cfg.lhost, TARGET: cfg.itarget, EVIL: cfg.evil, HOST: sni, Sweep: parseSweep(cfg.sweep), ScanHosts: scanHosts, Ports: ports}
 
 	sopts := sender.Options{
 		DialAddr: dialAddr, TLS: useTLS, Proxy: cfg.proxy, TargetHost: targetHost,
@@ -780,6 +811,92 @@ func resolveTarget(r *rawreq.Request, urlFlag string, tlsFlag bool) (dialAddr, t
 		}
 	}
 	return net.JoinHostPort(host, port), hh, host, useTLS, nil
+}
+
+// topPorts is ordered by likelihood: web first, then DBs/stores, services,
+// container/k8s, message/queues, remote access, then round "dev app" ports.
+var topPorts = []int{
+	80, 443, 8080, 8443, 8000, 8888, 8008, 8081, 8082,
+	3306, 5432, 6379, 27017, 1433, 1521, 9200, 9300, 11211, 5984, 9042, 2181,
+	22, 21, 23, 25, 53, 110, 135, 139, 143, 389, 445, 465, 587, 993, 995, 2049,
+	2375, 2379, 6443, 10250, 10255,
+	5601, 5672, 15672, 9092, 8086, 8500, 7001, 4444,
+	3389, 5900,
+	3000, 5000, 9000, 1000, 2000, 4000, 6000, 7000, 10000, 3001, 4200, 5173, 9001, 9999,
+}
+
+// priorityPorts defines the front-loaded order used when expanding ranges.
+var priorityPorts = topPorts
+
+func parsePorts(s string) ([]int, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	switch strings.ToLower(s) {
+	case "top", "common", "default":
+		return topPorts, nil
+	case "all":
+		set := map[int]bool{}
+		for i := 1; i <= 65535; i++ {
+			set[i] = true
+		}
+		return orderByPriority(set), nil
+	}
+
+	set := map[int]bool{}
+	var order []int
+	hasRange := false
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if strings.Contains(part, "-") {
+			hasRange = true
+			se := strings.SplitN(part, "-", 2)
+			a, err1 := strconv.Atoi(strings.TrimSpace(se[0]))
+			b, err2 := strconv.Atoi(strings.TrimSpace(se[1]))
+			if err1 != nil || err2 != nil || a < 1 || b > 65535 || a > b {
+				return nil, fmt.Errorf("invalid port range %q", part)
+			}
+			for i := a; i <= b; i++ {
+				set[i] = true
+			}
+		} else {
+			v, err := strconv.Atoi(part)
+			if err != nil || v < 1 || v > 65535 {
+				return nil, fmt.Errorf("invalid port %q", part)
+			}
+			if !set[v] {
+				order = append(order, v)
+				set[v] = true
+			}
+		}
+	}
+	if hasRange {
+		return orderByPriority(set), nil
+	}
+	return order, nil
+}
+
+func orderByPriority(set map[int]bool) []int {
+	var out []int
+	seen := map[int]bool{}
+	for _, p := range priorityPorts {
+		if set[p] && !seen[p] {
+			out = append(out, p)
+			seen[p] = true
+		}
+	}
+	rest := make([]int, 0, len(set))
+	for p := range set {
+		if !seen[p] {
+			rest = append(rest, p)
+		}
+	}
+	sort.Ints(rest)
+	return append(out, rest...)
 }
 
 func parseSweep(s string) []string {

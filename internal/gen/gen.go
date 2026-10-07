@@ -9,11 +9,13 @@ import (
 )
 
 type Params struct {
-	LHOST  string
-	TARGET string
-	EVIL   string
-	HOST   string
-	Sweep  []string
+	LHOST     string
+	TARGET    string
+	EVIL      string
+	HOST      string
+	Sweep     []string
+	ScanHosts []string
+	Ports     []int
 }
 
 type OOB interface {
@@ -38,6 +40,9 @@ type Case struct {
 var ssrfFiles = []string{"ssrf-targets.txt", "metadata.txt", "schemes.txt", "redirect-rebind.txt"}
 
 func SSRF(dir string, p Params, o OOB) ([]Case, error) {
+	if len(p.Ports) > 0 {
+		return scanCases(p), nil
+	}
 	var cases []Case
 	n := 0
 	for _, fname := range ssrfFiles {
@@ -125,6 +130,27 @@ func Host(dir string, p Params, o OOB, allow map[string]bool, paths []string) ([
 		}
 	}
 	return cases, nil
+}
+
+func scanCases(p Params) []Case {
+	hosts := p.ScanHosts
+	if len(hosts) == 0 {
+		hosts = []string{"127.0.0.1"}
+	}
+	var cases []Case
+	n := 0
+	for _, host := range hosts {
+		for _, port := range p.Ports {
+			scheme := "http"
+			if port == 443 || port == 8443 {
+				scheme = "https"
+			}
+			val := fmt.Sprintf("%s://%s:%d", scheme, host, port)
+			cases = append(cases, Case{ID: fmt.Sprintf("p%05d", n), Mode: "ssrf", Source: "scan", Payload: val, Label: val})
+			n++
+		}
+	}
+	return cases
 }
 
 func sweepIPs(bases []string) []string {

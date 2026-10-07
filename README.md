@@ -37,6 +37,8 @@ and non-standard request headers — which `net/http` would normalize away.
 - `-sweep`: last-octet sweep of private /24 ranges (routing-based SSRF)
 - `-path`/`-paths`: replay routing-based SSRF across internal paths (`/admin`,
   `/internal`, `/dashboard`, … or your own list)
+- `-ports`/`-scan-host`: post-SSRF port & network scan through a confirmed SSRF
+  (open ports surface as rare response clusters)
 - Rate control: `-rate` (req/s), `-c` (workers), `-delay`/`-jitter`
 - Proxy through Burp (`-proxy`)
 - JSONL output (`-o`)
@@ -90,6 +92,29 @@ ssrfuzz -r upload.txt -mode ssrf -p imageUrl -oob abc.oast.fun
 # ...or let the tool find the SSRF-candidate params itself
 ssrfuzz -r req.txt -list-params            # recon: what's in the request
 ssrfuzz -r req.txt -mode ssrf -p auto      # fuzz the candidates
+
+# 4. Confirmed SSRF? Map the internal network through it
+ssrfuzz -r req.txt -mode ssrf -p url -ports top                 # scan localhost
+ssrfuzz -r req.txt -mode ssrf -p url -scan-host 10.0.0.5 -ports top
+ssrfuzz -r req.txt -mode ssrf -p url -sweep private -ports 80,443,6379  # network scan
+```
+
+## From recon to exploitation (SSRFmap)
+
+This tool is the **recon** half: find the SSRF / Host-Header bypass, discover the
+injection point, map the internal surface. It intentionally does **not** weaponize
+(no per-service gopher RCE, reverse shells, or SOCKS pivot).
+
+Once you have a confirmed SSRF, hand it to an exploitation framework like
+[SSRFmap](https://github.com/swisskyrepo/SSRFmap), which turns it into impact
+(Redis/MySQL/FastCGI RCE, cloud creds, pivoting). The input format is compatible —
+the same Burp request file and `-p <param>` work in both:
+
+```bash
+# recon here
+ssrfuzz  -r req.txt -mode ssrf -p url
+# exploit there
+python3 ssrfmap.py -r req.txt -p url -m readfiles,redis,aws
 ```
 
 ## Safety / not a DoS tool
