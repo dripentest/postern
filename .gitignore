@@ -1,6 +1,6 @@
 # build artifacts
-/ssrfuzz
-/ssrfuzz.exe
+/postern
+/postern.exe
 /dist/
 *.o
 *.a
