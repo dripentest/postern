@@ -85,9 +85,13 @@ separate client needed.
 postern -r req.txt -mode ssrf -p url -interactsh
 ```
 
-Use a self-hosted server with `-interactsh-server`/`-interactsh-token`. For a
-manual workflow instead, run `interactsh-client` yourself and pass its domain
-with `-oob abc.oast.fun`; the tool writes a `subdomain → payload` map to
+By default this uses the public interactsh servers, so the target's out-of-band
+interactions (and the fact you are testing it) transit a third party. For
+sensitive engagements, point at your own server with `-interactsh-server` /
+`-interactsh-token`.
+
+For a manual workflow instead, run `interactsh-client` yourself and pass its
+domain with `-oob abc.oast.fun`; the tool writes a `subdomain → payload` map to
 `oob-map-*.txt` for correlation by hand.
 
 ## Payloads

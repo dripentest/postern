@@ -180,7 +180,9 @@ DETECTION:
   -interactsh       Built-in interactsh client (recommended for blind): registers,
                     generates a unique subdomain per payload, polls in the
                     background, and prints confirmed blind callbacks live and in
-                    the summary - no separate interactsh-client needed.
+                    the summary - no separate interactsh-client needed. Uses the
+                    public servers by default (OOB traffic transits a third party;
+                    use -interactsh-server for sensitive engagements).
   -interactsh-server <url>  Self-hosted interactsh server (default: public servers).
   -interactsh-token <tok>   Auth token for a self-hosted server.
   -oob-wait <dur>   After the run, keep polling this long for delayed callbacks
