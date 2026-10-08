@@ -112,3 +112,21 @@ Placeholders are expanded at runtime:
 postern finds the SSRF/bypass; it does not weaponize it. Hand a confirmed finding
 to [SSRFmap](https://github.com/swisskyrepo/SSRFmap) for RCE and pivoting — the
 `-r`/`-p` input format is compatible.
+
+## Disclaimer
+
+postern is intended **only** for authorized security testing and educational
+purposes. Use it exclusively against systems that you own or for which you have
+explicit, prior, written permission to test (for example a signed penetration-test
+engagement, a bug-bounty program whose scope covers the target, or your own lab).
+
+Using this tool against systems without authorization is illegal in most
+jurisdictions and may violate computer-misuse, privacy, and other laws. Sending
+traffic at a target can also disrupt it — you are responsible for staying within
+your scope and rules of engagement.
+
+**You are solely responsible for your own actions.** The authors and contributors
+accept no liability and are not responsible for any misuse, damage, or other
+consequences arising from the use of this tool. By downloading, compiling, or
+running postern you agree to these terms and accept full responsibility for how
+you use it. If you do not agree, do not use it.
