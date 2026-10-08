@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"math"
 	"math/rand"
 	"net"
@@ -77,17 +78,39 @@ type config struct {
 	extraHdrs        headerList
 }
 
-const banner = `
-        ________________
-       |                |
-       |\               |       p o s t e r n
-       | \              |
-       |  \  o          |       SSRF & Host-Header recon
-       |  |             |
-       |  /             |       slip in through the side gate
-       | /              |
-       |/_______________|       authorized use only
-`
+func printBanner(w io.Writer) {
+	var f, r, n, d, k, x string
+	if bannerColor(w) {
+		f = "\033[90m"   // frame: dim gray
+		r = "\033[93m"   // light rays: bright yellow
+		n = "\033[1;96m" // name: bold cyan
+		d = "\033[90m"   // taglines: dim gray
+		k = "\033[1;93m" // knob: bold yellow
+		x = "\033[0m"
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintf(w, "      %s.----------------.%s\n", f, x)
+	fmt.Fprintf(w, "      %s|////////|       |%s\n", f, x)
+	fmt.Fprintf(w, "      %s|////////|       |%s %s\\%s          %sp o s t e r n%s\n", f, x, r, x, n, x)
+	fmt.Fprintf(w, "      %s|////////|     . |%s %s \\%s\n", f, x, r, x)
+	fmt.Fprintf(w, "      %s|////////%so%s       |%s %s===>===%s   %sSSRF & Host-Header recon%s\n", f, k, f, x, r, x, d, x)
+	fmt.Fprintf(w, "      %s|////////|     . |%s %s /%s\n", f, x, r, x)
+	fmt.Fprintf(w, "      %s|////////|       |%s %s/%s          %sslip in through the side gate%s\n", f, x, r, x, d, x)
+	fmt.Fprintf(w, "      %s'----------------'%s             %sauthorized use only%s\n", f, x, d, x)
+	fmt.Fprintln(w)
+}
+
+func bannerColor(w io.Writer) bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
 
 var ssrfParamKeywords = []string{
 	"url", "uri", "urn", "link", "src", "source", "dest", "destination",
@@ -303,7 +326,7 @@ func parseFlags() *config {
 
 func run(cfg *config) error {
 	if !cfg.silent {
-		fmt.Fprint(os.Stderr, banner)
+		printBanner(os.Stderr)
 	}
 	if cfg.reqFile == "" {
 		flag.Usage()
