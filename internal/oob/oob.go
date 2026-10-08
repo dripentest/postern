@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 )
 
 type Mapper struct {
 	base    string
 	enabled bool
+	n       int64
 	mu      sync.Mutex
 	w       *os.File
 }
@@ -28,20 +30,21 @@ func New(base, path string) (*Mapper, error) {
 
 func (m *Mapper) Enabled() bool { return m != nil && m.enabled }
 
-func (m *Mapper) Sub(id string) string {
+func (m *Mapper) Alloc() string {
 	if !m.Enabled() {
 		return ""
 	}
-	return id + "." + m.base
+	n := atomic.AddInt64(&m.n, 1)
+	return fmt.Sprintf("p%05d.%s", n, m.base)
 }
 
-func (m *Mapper) Record(id, label string) {
+func (m *Mapper) Record(host, label string) {
 	if m == nil || m.w == nil {
 		return
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	fmt.Fprintf(m.w, "%s.%s\t%s\n", id, m.base, label)
+	fmt.Fprintf(m.w, "%s\t%s\n", host, label)
 }
 
 func (m *Mapper) Close() {

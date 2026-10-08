@@ -17,7 +17,8 @@ For authorized security testing only.
 - Host-Header: replace / duplicate / absolute-URI / override headers, routing
   sweeps over private /24 ranges, and internal path replay
 - Port and network scan through a confirmed SSRF
-- Detection: baseline diff, body signatures, payload reflection, interactsh OOB
+- Detection: baseline diff, body signatures, payload reflection, and blind
+  confirmation via a built-in interactsh client (`-interactsh`)
 - Response clustering to triage large runs
 - Rate limiting, circuit breaker and a request cap to stay safe on live targets
 - Burp proxy support and JSONL output
@@ -75,10 +76,19 @@ distinct responses) stand out without scrolling.
 
 ## Blind detection (interactsh)
 
-Run `interactsh-client` in another terminal and pass its domain with
-`-oob abc.oast.fun`. Each payload gets a unique subdomain and the
-`subdomain → payload` map is written to `oob-map-*.txt`, so a callback tells you
-exactly which payload fired.
+Pass `-interactsh` and the tool runs its own interactsh client: it registers with
+the public servers, gives each payload a unique subdomain, polls in the
+background, and prints confirmed blind callbacks live and in the summary — no
+separate client needed.
+
+```bash
+postern -r req.txt -mode ssrf -p url -interactsh
+```
+
+Use a self-hosted server with `-interactsh-server`/`-interactsh-token`. For a
+manual workflow instead, run `interactsh-client` yourself and pass its domain
+with `-oob abc.oast.fun`; the tool writes a `subdomain → payload` map to
+`oob-map-*.txt` for correlation by hand.
 
 ## Payloads
 

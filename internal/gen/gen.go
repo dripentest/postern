@@ -20,8 +20,8 @@ type Params struct {
 
 type OOB interface {
 	Enabled() bool
-	Sub(id string) string
-	Record(id, label string)
+	Alloc() string
+	Record(host, label string)
 }
 
 type Case struct {
@@ -58,7 +58,7 @@ func SSRF(dir string, p Params, o OOB) ([]Case, error) {
 			}
 			n++
 			if oobHost != "" {
-				o.Record(id, val)
+				o.Record(oobHost, val)
 			}
 			cases = append(cases, Case{ID: id, Mode: "ssrf", Source: fname, Payload: val, OOB: oobHost, Label: val})
 		}
@@ -122,7 +122,7 @@ func Host(dir string, p Params, o OOB, allow map[string]bool, paths []string) ([
 						label += " " + path
 					}
 					if oobHost != "" {
-						o.Record(id, label)
+						o.Record(oobHost, label)
 					}
 					cases = append(cases, Case{ID: id, Mode: "host", Source: "host", Payload: val, Header: h, Variant: v[0], Path: path, OOB: oobHost, Label: label})
 				}
@@ -172,7 +172,7 @@ func expand(s, id string, p Params, o OOB) (val, oobHost string, skip bool) {
 		if o == nil || !o.Enabled() {
 			return "", "", true
 		}
-		sub := o.Sub(id)
+		sub := o.Alloc()
 		s = strings.ReplaceAll(s, "{{OOB}}", sub)
 		s = strings.ReplaceAll(s, "{{COLLAB}}", sub)
 		oobHost = sub
@@ -183,7 +183,7 @@ func expand(s, id string, p Params, o OOB) (val, oobHost string, skip bool) {
 		case p.EVIL != "":
 			s = strings.ReplaceAll(s, "{{EVIL}}", p.EVIL)
 		case o != nil && o.Enabled():
-			sub := o.Sub(id)
+			sub := o.Alloc()
 			s = strings.ReplaceAll(s, "{{EVIL}}", sub)
 			oobHost = sub
 		default:

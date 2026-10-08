@@ -37,39 +37,43 @@ func (h *headerList) Set(v string) error {
 }
 
 type config struct {
-	reqFile    string
-	mode       string
-	param      string
-	urlFlag    string
-	tls        bool
-	proxy      string
-	conc       int
-	rate       float64
-	delay      time.Duration
-	jitter     time.Duration
-	timeout    time.Duration
-	insecure   bool
-	oobBase    string
-	oobMap     string
-	lhost      string
-	evil       string
-	itarget    string
-	sweep      string
-	ports      string
-	scanHost   string
-	path       string
-	paths      string
-	payloads   string
-	out        string
-	verbose    bool
-	lenPct     int
-	match      string
-	probe      bool
-	max        int
-	maxErrors  int
-	retries    int
-	listParams bool
-	extraHdrs  headerList
+	reqFile          string
+	mode             string
+	param            string
+	urlFlag          string
+	tls              bool
+	proxy            string
+	conc             int
+	rate             float64
+	delay            time.Duration
+	jitter           time.Duration
+	timeout          time.Duration
+	insecure         bool
+	oobBase          string
+	oobMap           string
+	interactsh       bool
+	interactshServer string
+	interactshToken  string
+	oobWait          time.Duration
+	lhost            string
+	evil             string
+	itarget          string
+	sweep            string
+	ports            string
+	scanHost         string
+	path             string
+	paths            string
+	payloads         string
+	out              string
+	verbose          bool
+	lenPct           int
+	match            string
+	probe            bool
+	max              int
+	maxErrors        int
+	retries          int
+	listParams       bool
+	extraHdrs        headerList
 }
 
 var ssrfParamKeywords = []string{
@@ -173,12 +177,18 @@ DETECTION:
                     whole dictionary at all ~55 of them. Core SSRF headers (Host,
                     X-Forwarded-Host, X-Forwarded-For, ...) are always kept. Big
                     request savings; can miss blind-only headers, so pair with -oob.
-  -oob <domain>     interactsh base domain (e.g. abc.oast.fun) for blind SSRF /
-                    poisoning. Each payload gets a unique subdomain; a callback in
-                    your interactsh-client proves the server reached out even when
-                    the HTTP response looks normal. Run interactsh-client yourself.
-  -oobmap <file>    Where to write the "subdomain -> payload" map so you can tell
-                    which payload a callback came from (default oob-map-<ts>.txt).
+  -interactsh       Built-in interactsh client (recommended for blind): registers,
+                    generates a unique subdomain per payload, polls in the
+                    background, and prints confirmed blind callbacks live and in
+                    the summary - no separate interactsh-client needed.
+  -interactsh-server <url>  Self-hosted interactsh server (default: public servers).
+  -interactsh-token <tok>   Auth token for a self-hosted server.
+  -oob-wait <dur>   After the run, keep polling this long for delayed callbacks
+                    (default 30s; Ctrl-C skips the wait).
+  -oob <domain>     Manual OOB instead of -interactsh: you run interactsh-client
+                    and pass its domain. Each payload gets a unique subdomain and a
+                    "subdomain -> payload" map is written for correlation by hand.
+  -oobmap <file>    Where to write that map (default oob-map-<ts>.txt).
 
 RATE CONTROL / SAFETY (don't turn this into a DoS):
   -rate <float>     Global requests/sec across all workers (default 25). This is
@@ -246,8 +256,12 @@ func parseFlags() *config {
 	flag.DurationVar(&cfg.jitter, "jitter", 0, "random extra delay up to this value")
 	flag.DurationVar(&cfg.timeout, "timeout", 10*time.Second, "per-request timeout")
 	flag.BoolVar(&cfg.insecure, "k", true, "skip TLS certificate verification")
-	flag.StringVar(&cfg.oobBase, "oob", "", "interactsh base domain for blind detection")
+	flag.StringVar(&cfg.oobBase, "oob", "", "interactsh base domain for blind detection (external client + map)")
 	flag.StringVar(&cfg.oobMap, "oobmap", "", "file for the OOB correlation map")
+	flag.BoolVar(&cfg.interactsh, "interactsh", false, "built-in interactsh client: register, poll, and auto-confirm blind hits")
+	flag.StringVar(&cfg.interactshServer, "interactsh-server", "", "self-hosted interactsh server URL (default: public servers)")
+	flag.StringVar(&cfg.interactshToken, "interactsh-token", "", "auth token for a self-hosted interactsh server")
+	flag.DurationVar(&cfg.oobWait, "oob-wait", 30*time.Second, "after the run, keep polling interactsh this long for delayed callbacks")
 	flag.StringVar(&cfg.lhost, "lhost", "", "value for {{LHOST}}")
 	flag.StringVar(&cfg.evil, "evil", "", "value for {{EVIL}} host poisoning (else OOB)")
 	flag.StringVar(&cfg.itarget, "itarget", "127.0.0.1", "value for {{TARGET}} internal address")
@@ -351,15 +365,36 @@ func run(cfg *config) error {
 		}
 	}
 
+	var printMu sync.Mutex
+
+	var oobProvider gen.OOB
+	var oobClient *oob.Client
+	var staticMapper *oob.Mapper
 	oobMapPath := cfg.oobMap
-	if cfg.oobBase != "" && oobMapPath == "" {
-		oobMapPath = fmt.Sprintf("oob-map-%d.txt", time.Now().Unix())
+	if cfg.interactsh {
+		cl, err := oob.NewClient(cfg.interactshServer, cfg.interactshToken, func(h oob.Hit) {
+			printMu.Lock()
+			fmt.Printf("[OOB   ] %-28s via %-4s from %s\n", short(h.Label, 28), h.Protocol, h.Remote)
+			printMu.Unlock()
+		})
+		if err != nil {
+			return fmt.Errorf("interactsh client: %w", err)
+		}
+		oobClient = cl
+		oobProvider = cl
+		defer cl.Close()
+	} else {
+		if cfg.oobBase != "" && oobMapPath == "" {
+			oobMapPath = fmt.Sprintf("oob-map-%d.txt", time.Now().Unix())
+		}
+		m, err := oob.New(cfg.oobBase, oobMapPath)
+		if err != nil {
+			return fmt.Errorf("oob map: %w", err)
+		}
+		staticMapper = m
+		oobProvider = m
+		defer m.Close()
 	}
-	mapper, err := oob.New(cfg.oobBase, oobMapPath)
-	if err != nil {
-		return fmt.Errorf("oob map: %w", err)
-	}
-	defer mapper.Close()
 
 	ports, err := parsePorts(cfg.ports)
 	if err != nil {
@@ -415,7 +450,7 @@ func run(cfg *config) error {
 
 	var cases []gen.Case
 	if cfg.mode == "ssrf" || cfg.mode == "both" {
-		sc, err := gen.SSRF(cfg.payloads, params, mapper)
+		sc, err := gen.SSRF(cfg.payloads, params, oobProvider)
 		if err != nil {
 			return err
 		}
@@ -440,7 +475,7 @@ func run(cfg *config) error {
 		if err != nil {
 			return err
 		}
-		hc, err := gen.Host(cfg.payloads, params, mapper, allow, pathList)
+		hc, err := gen.Host(cfg.payloads, params, oobProvider, allow, pathList)
 		if err != nil {
 			return err
 		}
@@ -455,7 +490,9 @@ func run(cfg *config) error {
 	}
 
 	fmt.Printf("[*] cases: %d | workers: %d | rate: %.0f req/s", len(cases), cfg.conc, cfg.rate)
-	if mapper.Enabled() {
+	if oobClient != nil {
+		fmt.Printf(" | OOB: interactsh %s (live)", oobClient.Domain())
+	} else if staticMapper.Enabled() {
 		fmt.Printf(" | OOB: %s (map: %s)", cfg.oobBase, oobMapPath)
 	}
 	fmt.Println()
@@ -480,7 +517,6 @@ func run(cfg *config) error {
 	defer stopSignals()
 
 	var (
-		printMu       sync.Mutex
 		nSent, nErr   int64
 		nInt, nStrong int64
 		nOOB          int64
@@ -644,10 +680,30 @@ feed:
 	fmt.Printf("[*] done: sent=%d interesting=%d strong=%d errors=%d oob-sent=%d\n",
 		nSent, nInt, nStrong, nErr, nOOB)
 	printClusters(clusters)
-	if mapper.Enabled() {
+
+	if oobClient != nil {
+		if nOOB > 0 && ctx.Err() == nil && cfg.oobWait > 0 {
+			fmt.Printf("[*] waiting %s for delayed OOB callbacks (Ctrl-C to skip)...\n", cfg.oobWait)
+			waitInterruptible(ctx, cfg.oobWait)
+		}
+		hits := oobClient.Hits()
+		fmt.Printf("[*] OOB (interactsh %s): %d confirmed callback(s)\n", oobClient.Domain(), len(hits))
+		for _, h := range hits {
+			fmt.Printf("    [%s] %s  from %s\n", h.Protocol, h.Label, h.Remote)
+		}
+	} else if staticMapper.Enabled() {
 		fmt.Printf("[*] check interactsh-client for callbacks; payload mapping in %s\n", oobMapPath)
 	}
 	return nil
+}
+
+func waitInterruptible(ctx context.Context, d time.Duration) {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+	case <-t.C:
+	}
 }
 
 type cluster struct {
