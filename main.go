@@ -73,8 +73,21 @@ type config struct {
 	maxErrors        int
 	retries          int
 	listParams       bool
+	silent           bool
 	extraHdrs        headerList
 }
+
+const banner = `
+        ________________
+       |                |
+       |\               |       p o s t e r n
+       | \              |
+       |  \  o          |       SSRF & Host-Header recon
+       |  |             |
+       |  /             |       slip in through the side gate
+       | /              |
+       |/_______________|       authorized use only
+`
 
 var ssrfParamKeywords = []string{
 	"url", "uri", "urn", "link", "src", "source", "dest", "destination",
@@ -214,6 +227,7 @@ RATE CONTROL / SAFETY (don't turn this into a DoS):
 
 OUTPUT:
   -v                Print every result, not just the interesting ones.
+  -silent           Suppress the startup banner.
   -o <file>         Write full results as JSON Lines to a file (for grep/jq).
   -k                Skip TLS certificate verification (default true) - targets
                     often have self-signed certs.
@@ -249,6 +263,7 @@ func parseFlags() *config {
 	flag.StringVar(&cfg.mode, "mode", "ssrf", "mode: ssrf | host | both")
 	flag.StringVar(&cfg.param, "p", "", "parameter to fuzz (ssrf): a name, 'auto' (SSRF-candidate params), or 'all'; else FUZZ marker")
 	flag.BoolVar(&cfg.listParams, "list-params", false, "discover and print request parameters (candidates marked), then exit")
+	flag.BoolVar(&cfg.silent, "silent", false, "suppress the startup banner")
 	flag.StringVar(&cfg.urlFlag, "url", "", "override target: scheme://host[:port]")
 	flag.BoolVar(&cfg.tls, "tls", false, "target over TLS (when -url not given)")
 	flag.StringVar(&cfg.proxy, "proxy", "", "HTTP proxy host:port (e.g. Burp 127.0.0.1:8080)")
@@ -287,6 +302,9 @@ func parseFlags() *config {
 }
 
 func run(cfg *config) error {
+	if !cfg.silent {
+		fmt.Fprint(os.Stderr, banner)
+	}
 	if cfg.reqFile == "" {
 		flag.Usage()
 		return fmt.Errorf("missing -r (raw request file)")
