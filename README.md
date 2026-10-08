@@ -1,4 +1,4 @@
-# ssrfuzz
+# postern
 
 SSRF and Host-Header fuzzer. It takes a raw HTTP request, injects a large bypass
 dictionary into a chosen parameter or header, and flags responses that differ
@@ -25,39 +25,39 @@ For authorized security testing only.
 ## Install
 
 ```bash
-git clone https://github.com/dripentest/ssrfuzz
-cd ssrfuzz && go build -o ssrfuzz .
+git clone https://github.com/dripentest/postern
+cd postern && go build -o postern .
 ```
 
 ## Usage
 
 ```bash
-ssrfuzz -r <request-file> -mode <ssrf|host|both> [options]
+postern -r <request-file> -mode <ssrf|host|both> [options]
 ```
 
-Run `ssrfuzz -h` for all options.
+Run `postern -h` for all options.
 
 ## Examples
 
 ```bash
 # SSRF on a parameter, blind confirmation via interactsh
-ssrfuzz -r req.txt -mode ssrf -p imageUrl -oob abc.oast.fun
+postern -r req.txt -mode ssrf -p imageUrl -oob abc.oast.fun
 
 # auto-discover and fuzz SSRF-candidate parameters
-ssrfuzz -r req.txt -list-params
-ssrfuzz -r req.txt -mode ssrf -p auto
+postern -r req.txt -list-params
+postern -r req.txt -mode ssrf -p auto
 
 # Host-Header attacks, skipping headers with no effect
-ssrfuzz -r req.txt -mode host -probe
+postern -r req.txt -mode host -probe
 
 # routing-based SSRF: internal ranges x internal paths
-ssrfuzz -r req.txt -mode host -probe -sweep private -paths default
+postern -r req.txt -mode host -probe -sweep private -paths default
 
 # port-scan localhost through a confirmed SSRF
-ssrfuzz -r req.txt -mode ssrf -p url -ports top
+postern -r req.txt -mode ssrf -p url -ports top
 
 # through Burp, print every result
-ssrfuzz -r req.txt -mode both -proxy 127.0.0.1:8080 -v
+postern -r req.txt -mode both -proxy 127.0.0.1:8080 -v
 ```
 
 ## Output
@@ -95,6 +95,6 @@ Placeholders are expanded at runtime:
 
 ## Exploitation
 
-ssrfuzz finds the SSRF/bypass; it does not weaponize it. Hand a confirmed finding
+postern finds the SSRF/bypass; it does not weaponize it. Hand a confirmed finding
 to [SSRFmap](https://github.com/swisskyrepo/SSRFmap) for RCE and pivoting — the
 `-r`/`-p` input format is compatible.

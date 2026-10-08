@@ -21,7 +21,7 @@ func New(base, path string) (*Mapper, error) {
 			return nil, err
 		}
 		m.w = f
-		fmt.Fprintf(f, "# ssrfuzz OOB map: <subdomain>\\t<payload/label>\n")
+		fmt.Fprintf(f, "# postern OOB map: <subdomain>\\t<payload/label>\n")
 	}
 	return m, nil
 }

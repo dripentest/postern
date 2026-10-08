@@ -18,11 +18,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"ssrfuzz/internal/detect"
-	"ssrfuzz/internal/gen"
-	"ssrfuzz/internal/oob"
-	"ssrfuzz/internal/rawreq"
-	"ssrfuzz/internal/sender"
+	"postern/internal/detect"
+	"postern/internal/gen"
+	"postern/internal/oob"
+	"postern/internal/rawreq"
+	"postern/internal/sender"
 )
 
 type headerList []string
@@ -86,10 +86,10 @@ var coreHeaders = map[string]bool{
 	"true-client-ip": true, "x-client-ip": true, "cf-connecting-ip": true,
 }
 
-const usageText = `ssrfuzz - SSRF and Host-Header fuzzing toolkit (authorized testing only)
+const usageText = `postern - SSRF and Host-Header fuzzing toolkit (authorized testing only)
 
 USAGE:
-  ssrfuzz -r <raw-request-file> -mode <ssrf|host|both> [options]
+  postern -r <raw-request-file> -mode <ssrf|host|both> [options]
 
 MODES:
   ssrf   Fuzz an injection point with SSRF payloads (localhost bypasses,
@@ -201,18 +201,18 @@ OUTPUT:
 
 EXAMPLES:
   # SSRF on a specific parameter, confirm blind hits via interactsh
-  ssrfuzz -r req.txt -mode ssrf -p imageUrl -oob abc.oast.fun -rate 15
+  postern -r req.txt -mode ssrf -p imageUrl -oob abc.oast.fun -rate 15
   # let the tool find SSRF-candidate parameters itself
-  ssrfuzz -r req.txt -list-params
-  ssrfuzz -r req.txt -mode ssrf -p auto
+  postern -r req.txt -list-params
+  postern -r req.txt -mode ssrf -p auto
   # Host-Header attacks, prune dead headers, match the admin indicator
-  ssrfuzz -r req.txt -mode host -probe -match "ADMIN PANEL" -rate 20
+  postern -r req.txt -mode host -probe -match "ADMIN PANEL" -rate 20
   # routing-based SSRF: internal IPs x internal paths
-  ssrfuzz -r req.txt -mode host -probe -sweep private -paths default -rate 10
+  postern -r req.txt -mode host -probe -sweep private -paths default -rate 10
   # port-scan localhost through a confirmed SSRF
-  ssrfuzz -r req.txt -mode ssrf -p url -ports top
+  postern -r req.txt -mode ssrf -p url -ports top
   # everything, piped through Burp for manual review
-  ssrfuzz -r req.txt -mode both -proxy 127.0.0.1:8080 -v
+  postern -r req.txt -mode both -proxy 127.0.0.1:8080 -v
 `
 
 func main() {
