@@ -2,18 +2,19 @@ package main
 
 import (
 	"context"
+	"embed"
 	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"math"
 	"math/rand"
 	"net"
 	"net/url"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -22,11 +23,11 @@ import (
 	"sync/atomic"
 	"time"
 
-	"postern/internal/detect"
-	"postern/internal/gen"
-	"postern/internal/oob"
-	"postern/internal/rawreq"
-	"postern/internal/sender"
+	"github.com/dripentest/postern/internal/detect"
+	"github.com/dripentest/postern/internal/gen"
+	"github.com/dripentest/postern/internal/oob"
+	"github.com/dripentest/postern/internal/rawreq"
+	"github.com/dripentest/postern/internal/sender"
 )
 
 type headerList []string
@@ -78,25 +79,43 @@ type config struct {
 	extraHdrs        headerList
 }
 
+//go:embed payloads
+var embeddedPayloads embed.FS
+
+func payloadFS(dir string) (fs.FS, string, error) {
+	if st, err := os.Stat(dir); err == nil && st.IsDir() {
+		return os.DirFS(dir), dir, nil
+	}
+	sub, err := fs.Sub(embeddedPayloads, "payloads")
+	if err != nil {
+		return nil, "", err
+	}
+	return sub, "embedded", nil
+}
+
 func printBanner(w io.Writer) {
-	var f, r, n, d, k, x string
+	var lite, door, name, dim, floor, x string
 	if bannerColor(w) {
-		f = "\033[90m"   // frame: dim gray
-		r = "\033[93m"   // light rays: bright yellow
-		n = "\033[1;96m" // name: bold cyan
-		d = "\033[90m"   // taglines: dim gray
-		k = "\033[1;93m" // knob: bold yellow
+		lite = "\033[97m"   // blinding light through the opening
+		door = "\033[90m"   // door slab: dim gray
+		name = "\033[1;96m" // name: bold cyan
+		dim = "\033[90m"    // taglines: dim gray
+		floor = "\033[37m"  // light spilling on the floor
 		x = "\033[0m"
 	}
+	B := func(s string) string { return lite + s + x }
+	D := func(s string) string { return door + s + x }
+	T := func(c, s string) string { return c + s + x }
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "      %s.----------------.%s\n", f, x)
-	fmt.Fprintf(w, "      %s|////////|       |%s\n", f, x)
-	fmt.Fprintf(w, "      %s|////////|       |%s %s\\%s          %sp o s t e r n%s\n", f, x, r, x, n, x)
-	fmt.Fprintf(w, "      %s|////////|     . |%s %s \\%s\n", f, x, r, x)
-	fmt.Fprintf(w, "      %s|////////%so%s       |%s %s===>===%s   %sSSRF & Host-Header recon%s\n", f, k, f, x, r, x, d, x)
-	fmt.Fprintf(w, "      %s|////////|     . |%s %s /%s\n", f, x, r, x)
-	fmt.Fprintf(w, "      %s|////////|       |%s %s/%s          %sslip in through the side gate%s\n", f, x, r, x, d, x)
-	fmt.Fprintf(w, "      %s'----------------'%s             %sauthorized use only%s\n", f, x, d, x)
+	fmt.Fprintf(w, "   %s %s\n", B("███████████▓▒"), D(".------."))
+	fmt.Fprintf(w, "   %s %s\n", B("█████████████"), D("| .--. |"))
+	fmt.Fprintf(w, "   %s %s     %s\n", B("█████████████"), D("| |  | |"), T(name, "p o s t e r n"))
+	fmt.Fprintf(w, "   %s %s\n", B("█████████████"), D("| '--'o|"))
+	fmt.Fprintf(w, "   %s %s     %s\n", B("█████████████"), D("| .--. |"), T(dim, "SSRF & Host-Header recon"))
+	fmt.Fprintf(w, "   %s %s\n", B("█████████████"), D("| |  | |"))
+	fmt.Fprintf(w, "   %s %s     %s\n", B("███████████▓▒"), D("| '--' |"), T(dim, "slip in through the side gate"))
+	fmt.Fprintf(w, "   %s %s\n", B("█████████▓▒░░"), D("'------'"))
+	fmt.Fprintf(w, "    %s        %s\n", T(floor, "░▒▓███▓▒░"), T(dim, "authorized use only"))
 	fmt.Fprintln(w)
 }
 
@@ -310,7 +329,7 @@ func parseFlags() *config {
 	flag.StringVar(&cfg.scanHost, "scan-host", "", "post-SSRF scan: host to port-scan (default 127.0.0.1; or use -sweep for a network scan)")
 	flag.StringVar(&cfg.path, "path", "", "host mode: single request path to use (e.g. /admin), overrides the request path")
 	flag.StringVar(&cfg.paths, "paths", "", "host mode: path list - 'default' (built-in paths.txt) or a file; multiplies the host matrix")
-	flag.StringVar(&cfg.payloads, "payloads", "payloads", "directory with payload files")
+	flag.StringVar(&cfg.payloads, "payloads", "payloads", "payload directory to override the embedded lists")
 	flag.StringVar(&cfg.out, "o", "", "write results as JSONL to this file")
 	flag.BoolVar(&cfg.verbose, "v", false, "print all results, not only interesting")
 	flag.IntVar(&cfg.lenPct, "lenpct", 25, "body-length delta threshold (%) to flag")
@@ -401,7 +420,13 @@ func run(cfg *config) error {
 		}
 	}
 
-	markers, _ := loadMarkers(filepath.Join(cfg.payloads, "markers.txt"))
+	pfs, payloadSrc, err := payloadFS(cfg.payloads)
+	if err != nil {
+		return fmt.Errorf("payloads: %w", err)
+	}
+	_ = payloadSrc
+
+	markers, _ := loadMarkers(pfs)
 	for _, m := range strings.Split(cfg.match, ",") {
 		if m = strings.TrimSpace(m); m != "" {
 			markers = append(markers, m)
@@ -493,7 +518,7 @@ func run(cfg *config) error {
 
 	var cases []gen.Case
 	if cfg.mode == "ssrf" || cfg.mode == "both" {
-		sc, err := gen.SSRF(cfg.payloads, params, oobProvider)
+		sc, err := gen.SSRF(pfs, params, oobProvider)
 		if err != nil {
 			return err
 		}
@@ -512,13 +537,13 @@ func run(cfg *config) error {
 	if cfg.mode == "host" || cfg.mode == "both" {
 		var allow map[string]bool
 		if cfg.probe {
-			allow = probeHeaders(cfg, base, sopts, bl, markers)
+			allow = probeHeaders(cfg, pfs, base, sopts, bl, markers)
 		}
-		pathList, err := resolvePaths(cfg)
+		pathList, err := resolvePaths(cfg, pfs)
 		if err != nil {
 			return err
 		}
-		hc, err := gen.Host(cfg.payloads, params, oobProvider, allow, pathList)
+		hc, err := gen.Host(pfs, params, oobProvider, allow, pathList)
 		if err != nil {
 			return err
 		}
@@ -831,8 +856,8 @@ func printParams(ps []rawreq.Param) {
 	fmt.Println("  (* = SSRF candidate; fuzz with -p auto, or -p all for every param)")
 }
 
-func probeHeaders(cfg *config, base *rawreq.Request, sopts sender.Options, bl detect.Baseline, markers []string) map[string]bool {
-	headers, err := gen.LoadHostHeaders(cfg.payloads)
+func probeHeaders(cfg *config, pfs fs.FS, base *rawreq.Request, sopts sender.Options, bl detect.Baseline, markers []string) map[string]bool {
+	headers, err := gen.LoadHostHeaders(pfs)
 	if err != nil {
 		return nil
 	}
@@ -923,16 +948,16 @@ func buildRequest(base *rawreq.Request, c gen.Case, param string, useTLS bool, l
 	return r, nil
 }
 
-func resolvePaths(cfg *config) ([]string, error) {
+func resolvePaths(cfg *config, pfs fs.FS) ([]string, error) {
 	if cfg.paths != "" {
-		var path string
+		var b []byte
+		var err error
 		switch strings.ToLower(cfg.paths) {
 		case "default", "all":
-			path = filepath.Join(cfg.payloads, "paths.txt")
+			b, err = fs.ReadFile(pfs, "paths.txt")
 		default:
-			path = cfg.paths
+			b, err = os.ReadFile(cfg.paths)
 		}
-		b, err := os.ReadFile(path)
 		if err != nil {
 			return nil, fmt.Errorf("read -paths: %w", err)
 		}
@@ -1137,8 +1162,8 @@ func parseSweep(s string) []string {
 	return out
 }
 
-func loadMarkers(path string) ([]string, error) {
-	b, err := os.ReadFile(path)
+func loadMarkers(pfs fs.FS) ([]string, error) {
+	b, err := fs.ReadFile(pfs, "markers.txt")
 	if err != nil {
 		return nil, err
 	}

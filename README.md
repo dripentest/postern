@@ -26,9 +26,19 @@ For authorized security testing only.
 ## Install
 
 ```bash
+go install github.com/dripentest/postern@latest
+```
+
+Or from source:
+
+```bash
 git clone https://github.com/dripentest/postern
 cd postern && go build -o postern .
 ```
+
+The payload lists are embedded in the binary, so `go install` gives a
+self-contained tool. To customize them, drop a `payloads/` directory next to
+where you run it (it takes precedence) or point at one with `-payloads`.
 
 ## Usage
 

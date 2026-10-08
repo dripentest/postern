@@ -1,10 +1,8 @@
 package gen
 
 import (
-	"bufio"
 	"fmt"
-	"os"
-	"path/filepath"
+	"io/fs"
 	"strings"
 )
 
@@ -39,14 +37,14 @@ type Case struct {
 
 var ssrfFiles = []string{"ssrf-targets.txt", "metadata.txt", "schemes.txt", "redirect-rebind.txt"}
 
-func SSRF(dir string, p Params, o OOB) ([]Case, error) {
+func SSRF(fsys fs.FS, p Params, o OOB) ([]Case, error) {
 	if len(p.Ports) > 0 {
 		return scanCases(p), nil
 	}
 	var cases []Case
 	n := 0
 	for _, fname := range ssrfFiles {
-		lines, err := loadLines(filepath.Join(dir, fname))
+		lines, err := loadLines(fsys, fname)
 		if err != nil {
 			return nil, err
 		}
@@ -72,16 +70,16 @@ func SSRF(dir string, p Params, o OOB) ([]Case, error) {
 	return cases, nil
 }
 
-func LoadHostHeaders(dir string) ([]string, error) {
-	return loadLines(filepath.Join(dir, "host-headers.txt"))
+func LoadHostHeaders(fsys fs.FS) ([]string, error) {
+	return loadLines(fsys, "host-headers.txt")
 }
 
-func Host(dir string, p Params, o OOB, allow map[string]bool, paths []string) ([]Case, error) {
-	headers, err := loadLines(filepath.Join(dir, "host-headers.txt"))
+func Host(fsys fs.FS, p Params, o OOB, allow map[string]bool, paths []string) ([]Case, error) {
+	headers, err := loadLines(fsys, "host-headers.txt")
 	if err != nil {
 		return nil, err
 	}
-	values, err := loadLines(filepath.Join(dir, "host-values.txt"))
+	values, err := loadLines(fsys, "host-values.txt")
 	if err != nil {
 		return nil, err
 	}
@@ -214,22 +212,18 @@ func expand(s, id string, p Params, o OOB) (val, oobHost string, skip bool) {
 	return s, oobHost, false
 }
 
-func loadLines(path string) ([]string, error) {
-	f, err := os.Open(path)
+func loadLines(fsys fs.FS, name string) ([]string, error) {
+	data, err := fs.ReadFile(fsys, name)
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", path, err)
+		return nil, fmt.Errorf("read %s: %w", name, err)
 	}
-	defer f.Close()
-
 	var out []string
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 		out = append(out, line)
 	}
-	return out, sc.Err()
+	return out, nil
 }

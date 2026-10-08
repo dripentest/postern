@@ -1,4 +1,4 @@
-module postern
+module github.com/dripentest/postern
 
 go 1.27.1
 
