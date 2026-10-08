@@ -23,6 +23,7 @@ type Options struct {
 	SNI        string
 	Insecure   bool
 	Timeout    time.Duration
+	Retries    int
 }
 
 type Result struct {
@@ -35,6 +36,15 @@ type Result struct {
 }
 
 func Send(opts Options, reqBytes []byte) Result {
+	res := sendOnce(opts, reqBytes)
+	for attempt := 0; res.Err != nil && attempt < opts.Retries; attempt++ {
+		time.Sleep(150 * time.Millisecond)
+		res = sendOnce(opts, reqBytes)
+	}
+	return res
+}
+
+func sendOnce(opts Options, reqBytes []byte) Result {
 	start := time.Now()
 	res := Result{}
 	fail := func(err error) Result {

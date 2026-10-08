@@ -13,13 +13,14 @@ type Baseline struct {
 	Status  int
 	BodyLen int
 	Hash    string
-	Dur     time.Duration
+	Mean    time.Duration
+	Std     time.Duration
 	markers map[string]bool
 	body    string
 }
 
-func NewBaseline(status int, body []byte, dur time.Duration, markers []string) Baseline {
-	b := Baseline{Status: status, BodyLen: len(body), Hash: HashBody(body), Dur: dur, markers: map[string]bool{}, body: string(body)}
+func NewBaseline(status int, body []byte, mean, std time.Duration, markers []string) Baseline {
+	b := Baseline{Status: status, BodyLen: len(body), Hash: HashBody(body), Mean: mean, Std: std, markers: map[string]bool{}, body: string(body)}
 	low := strings.ToLower(string(body))
 	for _, m := range markers {
 		if m == "" {
@@ -30,6 +31,19 @@ func NewBaseline(status int, body []byte, dur time.Duration, markers []string) B
 		}
 	}
 	return b
+}
+
+// SlowThreshold returns the latency above which a response is "slow": mean + 3*std,
+// with a floor so a very stable baseline doesn't flag on minor jitter.
+func (b Baseline) SlowThreshold() time.Duration {
+	if b.Mean <= 0 {
+		return 0
+	}
+	t := b.Mean + 3*b.Std
+	if floor := b.Mean + 500*time.Millisecond; t < floor {
+		t = floor
+	}
+	return t
 }
 
 type Signal struct {
@@ -89,9 +103,9 @@ func Analyze(b Baseline, status int, body []byte, dur time.Duration, markers []s
 		s.Reasons = append(s.Reasons, fmt.Sprintf("len 0->%d", len(body)))
 	}
 
-	if b.Dur > 0 && dur > b.Dur*3 && dur > b.Dur+2*time.Second {
+	if th := b.SlowThreshold(); th > 0 && dur > th {
 		s.Interesting = true
-		s.Reasons = append(s.Reasons, fmt.Sprintf("slow %s (base %s)", dur.Round(time.Millisecond), b.Dur.Round(time.Millisecond)))
+		s.Reasons = append(s.Reasons, fmt.Sprintf("slow %s (base mean %s)", dur.Round(time.Millisecond), b.Mean.Round(time.Millisecond)))
 	}
 
 	if len(s.Reasons) == 0 {

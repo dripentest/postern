@@ -2,15 +2,18 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"math"
 	"math/rand"
 	"net"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -64,6 +67,7 @@ type config struct {
 	probe      bool
 	max        int
 	maxErrors  int
+	retries    int
 	listParams bool
 	extraHdrs  headerList
 }
@@ -192,6 +196,9 @@ RATE CONTROL / SAFETY (don't turn this into a DoS):
   -max-errors <n>   Circuit breaker: after n consecutive request errors, or n
                     sustained very-slow responses, stop automatically - the target
                     is likely degrading (default 25). Ctrl-C also stops cleanly.
+  -retries <n>      Retry a request on a network error before recording it
+                    (default 1). A transient reset/timeout is not a closed port,
+                    and shouldn't trip the breaker.
 
 OUTPUT:
   -v                Print every result, not just the interesting ones.
@@ -257,6 +264,7 @@ func parseFlags() *config {
 	flag.BoolVar(&cfg.probe, "probe", false, "host mode: probe each header first, skip the ones with no visible effect (keeps core headers)")
 	flag.IntVar(&cfg.max, "max", 0, "abort before start if case count exceeds this (0 = no cap)")
 	flag.IntVar(&cfg.maxErrors, "max-errors", 25, "circuit breaker: consecutive errors / sustained slow responses before auto-stop")
+	flag.IntVar(&cfg.retries, "retries", 1, "retries on network error before recording a result (a transient reset != closed port)")
 	flag.Var(&cfg.extraHdrs, "H", "extra header for every request (repeatable): -H 'Name: Value'")
 	flag.Parse()
 	return cfg
@@ -377,19 +385,32 @@ func run(cfg *config) error {
 
 	sopts := sender.Options{
 		DialAddr: dialAddr, TLS: useTLS, Proxy: cfg.proxy, TargetHost: targetHost,
-		Method: base.Method, SNI: sni, Insecure: cfg.insecure, Timeout: cfg.timeout,
+		Method: base.Method, SNI: sni, Insecure: cfg.insecure, Timeout: cfg.timeout, Retries: cfg.retries,
 	}
 
 	fmt.Printf("[*] target: %s  TLS=%v  proxy=%q  method=%s\n", targetHost, useTLS, cfg.proxy, base.Method)
-	baseRes := sender.Send(sopts, base.Bytes())
+	var durs []time.Duration
+	var lastOK sender.Result
+	var lastErr error
+	for i := 0; i < 5; i++ {
+		r := sender.Send(sopts, base.Bytes())
+		if r.Err == nil {
+			durs = append(durs, r.Duration)
+			lastOK = r
+		} else {
+			lastErr = r.Err
+		}
+	}
 	var bl detect.Baseline
-	if baseRes.Err != nil {
-		fmt.Printf("[!] baseline failed: %v - diff will be coarser\n", baseRes.Err)
-		bl = detect.NewBaseline(0, nil, 0, markers)
+	if len(durs) == 0 {
+		fmt.Printf("[!] baseline failed: %v - diff will be coarser\n", lastErr)
+		bl = detect.NewBaseline(0, nil, 0, 0, markers)
 	} else {
-		bl = detect.NewBaseline(baseRes.Status, baseRes.Body, baseRes.Duration, markers)
-		fmt.Printf("[*] baseline: status=%d len=%d hash=%s dur=%s\n",
-			baseRes.Status, baseRes.BodyLen, detect.HashBody(baseRes.Body), baseRes.Duration.Round(time.Millisecond))
+		mean, std := meanStd(durs)
+		bl = detect.NewBaseline(lastOK.Status, lastOK.Body, mean, std, markers)
+		fmt.Printf("[*] baseline: status=%d len=%d hash=%s timing=%s±%s (n=%d)\n",
+			lastOK.Status, lastOK.BodyLen, detect.HashBody(lastOK.Body),
+			mean.Round(time.Millisecond), std.Round(time.Millisecond), len(durs))
 	}
 
 	var cases []gen.Case
@@ -493,7 +514,7 @@ func run(cfg *config) error {
 		clMu.Unlock()
 	}
 
-	slowCut := bl.Dur * 10
+	slowCut := bl.SlowThreshold() * 3
 	if slowCut < 3*time.Second {
 		slowCut = 3 * time.Second
 	}
@@ -528,7 +549,7 @@ func run(cfg *config) error {
 			return
 		}
 		atomic.StoreInt64(&consecErr, 0)
-		if bl.Dur > 0 && res.Duration > slowCut {
+		if bl.Mean > 0 && res.Duration > slowCut {
 			if atomic.AddInt64(&slowStreak, 1) >= int64(cfg.maxErrors) {
 				trip("sustained latency blowup (target degrading)")
 			}
@@ -657,6 +678,11 @@ func printClusters(clusters map[string]*cluster) {
 	}
 }
 
+var (
+	reIPv4    = regexp.MustCompile(`\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b`)
+	reB64Like = regexp.MustCompile(`^[A-Za-z0-9+/_-]{12,}={0,2}$`)
+)
+
 func isCandidate(p rawreq.Param) bool {
 	name := strings.ToLower(p.Name)
 	for _, kw := range ssrfParamKeywords {
@@ -664,8 +690,30 @@ func isCandidate(p rawreq.Param) bool {
 			return true
 		}
 	}
-	v := strings.ToLower(strings.TrimSpace(p.Value))
-	return strings.Contains(v, "://") || strings.HasPrefix(v, "http") || strings.HasPrefix(v, "//") || strings.HasPrefix(v, "/")
+	raw := strings.TrimSpace(p.Value)
+	v := strings.ToLower(raw)
+	switch {
+	case strings.Contains(v, "://"), strings.HasPrefix(v, "http"), strings.HasPrefix(v, "//"), strings.HasPrefix(v, "/"):
+		return true
+	case reIPv4.MatchString(v):
+		return true
+	case strings.Contains(v, "../") || strings.Contains(v, "..%2f") || strings.Contains(v, "%2e%2e"):
+		return true
+	case reB64Like.MatchString(raw) && decodedLooksURL(raw):
+		return true
+	}
+	return false
+}
+
+func decodedLooksURL(s string) bool {
+	for _, dec := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		if b, err := dec.DecodeString(s); err == nil {
+			if d := strings.ToLower(string(b)); strings.Contains(d, "://") || strings.HasPrefix(d, "http") {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func printParams(ps []rawreq.Param) {
@@ -952,6 +1000,24 @@ func orderByPriority(set map[int]bool) []int {
 	}
 	sort.Ints(rest)
 	return append(out, rest...)
+}
+
+func meanStd(ds []time.Duration) (mean, std time.Duration) {
+	if len(ds) == 0 {
+		return 0, 0
+	}
+	var sum float64
+	for _, d := range ds {
+		sum += float64(d)
+	}
+	m := sum / float64(len(ds))
+	var variance float64
+	for _, d := range ds {
+		diff := float64(d) - m
+		variance += diff * diff
+	}
+	variance /= float64(len(ds))
+	return time.Duration(m), time.Duration(math.Sqrt(variance))
 }
 
 func parseSweep(s string) []string {
