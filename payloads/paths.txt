@@ -72,3 +72,4 @@
 /.git/config
 /.env
 /robots.txt
+/.git
