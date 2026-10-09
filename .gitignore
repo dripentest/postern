@@ -17,7 +17,7 @@ oob-map-*.txt
 scope.txt
 
 # local-only notes (not for the public repo)
-ARCHITECTURE_RU.md
+*_RU.md
 
 # editor / OS
 .DS_Store
