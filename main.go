@@ -244,7 +244,8 @@ DETECTION:
                     public servers by default (OOB traffic transits a third party;
                     use -interactsh-server for sensitive engagements).
   -interactsh-server <url>  Self-hosted interactsh server (default: public servers).
-  -interactsh-token <tok>   Auth token for a self-hosted server.
+  -interactsh-token <tok>   Auth token for a self-hosted server. Prefer the env
+                    var POSTERN_INTERACTSH_TOKEN so the token is not visible in ps.
   -oob-wait <dur>   After the run, keep polling this long for delayed callbacks
                     (default 30s; Ctrl-C skips the wait).
   -oob <domain>     Manual OOB instead of -interactsh: you run interactsh-client
@@ -324,7 +325,7 @@ func parseFlags() *config {
 	flag.StringVar(&cfg.oobMap, "oobmap", "", "file for the OOB correlation map")
 	flag.BoolVar(&cfg.interactsh, "interactsh", false, "built-in interactsh client: register, poll, and auto-confirm blind hits")
 	flag.StringVar(&cfg.interactshServer, "interactsh-server", "", "self-hosted interactsh server URL (default: public servers)")
-	flag.StringVar(&cfg.interactshToken, "interactsh-token", "", "auth token for a self-hosted interactsh server")
+	flag.StringVar(&cfg.interactshToken, "interactsh-token", "", "auth token for a self-hosted interactsh server (or env POSTERN_INTERACTSH_TOKEN)")
 	flag.DurationVar(&cfg.oobWait, "oob-wait", 30*time.Second, "after the run, keep polling interactsh this long for delayed callbacks")
 	flag.StringVar(&cfg.lhost, "lhost", "", "value for {{LHOST}}")
 	flag.StringVar(&cfg.evil, "evil", "", "value for {{EVIL}} host poisoning (else OOB)")
@@ -446,7 +447,11 @@ func run(cfg *config) error {
 	var staticMapper *oob.Mapper
 	oobMapPath := cfg.oobMap
 	if cfg.interactsh {
-		cl, err := oob.NewClient(cfg.interactshServer, cfg.interactshToken, func(h oob.Hit) {
+		token := cfg.interactshToken
+		if token == "" {
+			token = os.Getenv("POSTERN_INTERACTSH_TOKEN")
+		}
+		cl, err := oob.NewClient(cfg.interactshServer, token, func(h oob.Hit) {
 			printMu.Lock()
 			fmt.Printf("[OOB   ] %-28s via %-4s from %s\n", short(h.Label, 28), h.Protocol, h.Remote)
 			printMu.Unlock()
