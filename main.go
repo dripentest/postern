@@ -150,149 +150,97 @@ var coreHeaders = map[string]bool{
 	"true-client-ip": true, "x-client-ip": true, "cf-connecting-ip": true,
 }
 
-const usageText = `postern - SSRF and Host-Header fuzzing toolkit (authorized testing only)
+const usageText = `postern - SSRF and Host-Header fuzzer (authorized testing only)
 
 USAGE:
-  postern -r <raw-request-file> -mode <ssrf|host|both> [options]
+  postern -r <request> -mode <ssrf|host|both> [options]
 
 MODES:
-  ssrf   Fuzz an injection point with SSRF payloads (localhost bypasses,
-         IP encodings, cloud metadata, schemes, redirect/rebind).
-         Requires -p <param> or a FUZZ marker in the request.
-  host   Host-Header attacks: matrix of override headers x values, with
-         replace / duplicate-Host / absolute-URI / add-header variants.
-  both   Run ssrf then host.
+  ssrf   inject SSRF payloads at a parameter or FUZZ marker
+  host   Host-Header attacks (override headers x values, routing SSRF)
+  both   run ssrf then host
 
-TARGETING:
-  -r <file>         Raw HTTP request used as the template (Burp: "Copy to file",
-                    or hand-written). Cookies, auth, CSRF token, Content-Type and
-                    body are all kept; only the chosen spot is mutated, so you hit
-                    the endpoint exactly as the app sees it. Required.
-  -p <value>        Where to inject SSRF payloads:
-                      <name> a specific parameter - works in the query string, a
-                             form-urlencoded body, a JSON key (even nested), or a
-                             multipart field, e.g. -p imageUrl
-                      auto   auto-pick parameters that look SSRF-prone (name like
-                             url/redirect/callback/host/path, or a URL-like value)
-                      all    every parameter discovered in the request
-                    If omitted (ssrf mode), the literal token FUZZ in the request
-                    marks the spot - put it anywhere: path, header, nested JSON.
-  -list-params      List the parameters found in the request (SSRF candidates
-                    marked with *) and exit. Recon step before you pick -p.
-  -url <u>          Connect to scheme://host[:port] instead of resolving from the
-                    Host header. Use for a lab/VPN IP while the Host header stays
-                    different, or to pin a port/scheme.
-  -tls              Speak TLS to the target when you did not pass an https:// -url.
-  -proxy <host:port> Route every request through an HTTP proxy (e.g. Burp at
-                    127.0.0.1:8080) to watch, log or replay the traffic.
-  -H "Name: Value"  Add a header to every request (repeatable). Needed e.g. for
-                    GCP metadata (-H "Metadata-Flavor: Google"), Azure
-                    (-H "Metadata: true") or to carry an auth token.
 
-SCOPE / PAYLOADS:
-  -payloads <dir>   Directory holding the payload word-lists (default "payloads").
-                    Edit those files to add or trim payloads - no rebuild needed.
-  -sweep <spec>     Brute the last octet (.0-.255) of /24 bases to reach internal
-                    hosts you don't know yet (gateways, neighbours). "private" =
-                    the RFC1918 ranges (192.168.0, 10.0.0, 172.16.0, 127.0.0), or
-                    a custom list like "10.10.10,192.168.56". In host mode these
-                    become Host values (routing SSRF); in ssrf mode, http://IP.
-  -ports <spec>     Post-SSRF recon (ssrf mode): turn a confirmed SSRF into a port
-                    scanner - the server fetches http(s)://host:port for you.
-                    "top" (curated), "all" (1-65535), CSV "80,6379", or range
-                    "1-1024". Ranges are reordered to try well-known and round
-                    dev ports (80,443,3306,6379,3000,8000,8080...) first. Open
-                    ports stand out as rare clusters in the summary.
-  -rebind <ips>     DNS rebinding bypass for TOCTOU filters (validate-then-connect):
-                    "ext:int" (e.g. 1.2.3.4:169.254.169.254) or just "int" with
-                    ext defaulting to 1.2.3.4. Builds alternating-DNS hosts via
-                    1u.ms and rbndr.us and adds them as SSRF targets.
-  -scan-host <host> Host to port-scan with -ports (default 127.0.0.1). Combine
-                    -ports with -sweep instead to scan a whole network (every
-                    swept IP x each port).
-  -path <p>         Host mode: replace the request path with this single path
-                    (e.g. /admin) - for routing SSRF where the interesting page
-                    isn't "/".
-  -paths <spec>     Host mode: replay every host case across a list of paths -
-                    "default" (built-in paths.txt: /admin, /actuator, /internal,
-                    ...) or your own file. Multiplies the host matrix by paths.
-  -lhost <addr>     Fills {{LHOST}} in payloads - your server/IP for redirect
-                    tricks (the box hosting your 302/307 to an internal target).
-  -evil <host>      Fills {{EVIL}} in host-poisoning payloads - the attacker host
-                    you want reflected (password-reset / cache poisoning). If
-                    empty but -oob is set, a unique OOB subdomain is used instead.
-  -itarget <addr>   Fills {{TARGET}} - the internal address you want to wrap in
-                    bypass payloads (default 127.0.0.1).
+TARGET:
+  -r <file>               raw HTTP request file (Burp "Copy to file")  [required]
+  -mode <ssrf|host|both>  attack mode  (default ssrf)
+  -url <scheme://h[:p]>   connect override (else taken from Host header)
+  -tls                    use TLS when -url is not given
+  -proxy <host:port>      route every request through an HTTP proxy (Burp)
+  -H <"Name: Value">      add a header to every request  (repeatable)
+
+INJECTION:
+  -p <name|auto|all>      parameter to fuzz, or auto / all; else FUZZ marker
+  -list-params            list request parameters (candidates marked *), then exit
+
+SSRF:
+  -sweep <spec>           /24 last-octet sweep: "private" or "10.10.10,192.168.56"
+  -rebind <ext:int>       DNS-rebinding hosts (1u.ms, rbndr.us) for TOCTOU filters
+  -ports <spec>           port-scan via SSRF: top | all | CSV | range (80,6379|1-1024)
+  -scan-host <host>       host to port-scan  (default 127.0.0.1)
+
+HOST-HEADER:
+  -probe                  probe headers first, drop the ineffective ones (keep core)
+  -path <path>            replace the request path (e.g. /admin)
+  -paths <default|file>   replay each host case across a path list
+
+PLACEHOLDERS:
+  -lhost <addr>           {{LHOST}}  - your server for redirect tricks
+  -evil <host>            {{EVIL}}   - attacker host for poisoning (else OOB)
+  -itarget <addr>         {{TARGET}} - internal address to wrap  (default 127.0.0.1)
+  -payloads <dir>         payload dir to override the embedded lists
 
 DETECTION:
-  -match <list>     Extra response-body signatures (comma-separated) counted as
-                    strong hits, e.g. -match "ADMIN PANEL,Jenkins". Use when the
-                    success indicator is app-specific and the built-in markers
-                    (/etc/passwd, cloud creds, service banners) don't cover it.
-  -lenpct <n>       Flag a response when its body length differs from the baseline
-                    by at least n percent (default 25). Lower = more sensitive,
-                    noisier; raise it on chatty/dynamic pages.
-  -probe            Host mode only: first probe each header with canaries and drop
-                    the headers that show no visible effect, instead of firing the
-                    whole dictionary at all ~55 of them. Core SSRF headers (Host,
-                    X-Forwarded-Host, X-Forwarded-For, ...) are always kept. Big
-                    request savings; can miss blind-only headers, so pair with -oob.
-  -interactsh       Built-in interactsh client (recommended for blind): registers,
-                    generates a unique subdomain per payload, polls in the
-                    background, and prints confirmed blind callbacks live and in
-                    the summary - no separate interactsh-client needed. Uses the
-                    public servers by default (OOB traffic transits a third party;
-                    use -interactsh-server for sensitive engagements).
-  -interactsh-server <url>  Self-hosted interactsh server (default: public servers).
-  -interactsh-token <tok>   Auth token for a self-hosted server. Prefer the env
-                    var POSTERN_INTERACTSH_TOKEN so the token is not visible in ps.
-  -oob-wait <dur>   After the run, keep polling this long for delayed callbacks
-                    (default 30s; Ctrl-C skips the wait).
-  -oob <domain>     Manual OOB instead of -interactsh: you run interactsh-client
-                    and pass its domain. Each payload gets a unique subdomain and a
-                    "subdomain -> payload" map is written for correlation by hand.
-  -oobmap <file>    Where to write that map (default oob-map-<ts>.txt).
+  -match <list>           extra body signatures (comma-separated) = strong hit
+  -lenpct <n>             body-length delta percent to flag  (default 25)
+  -interactsh             built-in interactsh client for blind OOB (auto-confirm)
+  -interactsh-server <u>  self-hosted interactsh server  (default public)
+  -interactsh-token <t>   server auth token (or env POSTERN_INTERACTSH_TOKEN)
+  -oob-wait <dur>         keep polling for callbacks after the run  (default 30s)
+  -oob <domain>           manual OOB: your interactsh domain + correlation map
+  -oobmap <file>          OOB map file  (default oob-map-<ts>.txt)
 
-RATE CONTROL / SAFETY (don't turn this into a DoS):
-  -rate <float>     Global requests/sec across all workers (default 25). This is
-                    the main throttle; 0 = unlimited (prints a warning - only on
-                    a target you know can take it).
-  -c <n>            Concurrent workers (default 10). Parallelism cap; -rate still
-                    bounds the overall request rate.
-  -delay <dur>      Fixed pause before each request (e.g. 200ms) - be gentle on
-                    fragile targets.
-  -jitter <dur>     Random extra pause up to this value, added to -delay, to look
-                    less like a flat scan.
-  -timeout <dur>    Per-request timeout (default 10s).
-  -max <n>          Refuse to start if the run would generate more than n cases
-                    (0 = no cap). A seatbelt against an accidental 60k-request run.
-  -max-errors <n>   Circuit breaker: after n consecutive request errors, or n
-                    sustained very-slow responses, stop automatically - the target
-                    is likely degrading (default 25). Ctrl-C also stops cleanly.
-  -retries <n>      Retry a request on a network error before recording it
-                    (default 1). A transient reset/timeout is not a closed port,
-                    and shouldn't trip the breaker.
+RATE / SAFETY:
+  -rate <n>               global requests/sec, 0 = unlimited  (default 25)
+  -c <n>                  concurrent workers  (default 10)
+  -delay <dur>            fixed pause before each request
+  -jitter <dur>           random extra pause up to this value
+  -timeout <dur>          per-request timeout  (default 10s)
+  -retries <n>            network-error retries before recording  (default 1)
+  -max <n>                abort before start if cases exceed n  (0 = no cap)
+  -max-errors <n>         circuit-breaker threshold  (default 25)
 
 OUTPUT:
-  -v                Print every result, not just the interesting ones.
-  -silent           Suppress the startup banner.
-  -o <file>         Write full results as JSON Lines to a file (for grep/jq).
-  -k                Skip TLS certificate verification (default true) - targets
-                    often have self-signed certs.
-
+  -o <file>               write results as JSON Lines
+  -v                      print every result, not just interesting ones
+  -silent                 suppress the startup banner
+  -k                      skip TLS certificate verification  (default true)
 EXAMPLES:
-  # SSRF on a specific parameter, confirm blind hits via interactsh
-  postern -r req.txt -mode ssrf -p imageUrl -oob abc.oast.fun -rate 15
-  # let the tool find SSRF-candidate parameters itself
+  # recon: what parameters are in the request
   postern -r req.txt -list-params
-  postern -r req.txt -mode ssrf -p auto
-  # Host-Header attacks, prune dead headers, match the admin indicator
-  postern -r req.txt -mode host -probe -match "ADMIN PANEL" -rate 20
-  # routing-based SSRF: internal IPs x internal paths
-  postern -r req.txt -mode host -probe -sweep private -paths default -rate 10
+
+  # SSRF on one parameter, confirm blind hits with the built-in interactsh
+  postern -r req.txt -mode ssrf -p imageUrl -interactsh
+
+  # SSRF: let postern pick the candidate parameters
+  postern -r req.txt -mode ssrf -p auto -interactsh
+
+  # SSRF to cloud metadata via DNS rebinding (TOCTOU bypass)
+  postern -r req.txt -mode ssrf -p url -rebind 1.2.3.4:169.254.169.254
+
+  # Host-Header: prune dead headers, match an app-specific indicator
+  postern -r req.txt -mode host -probe -match "ADMIN PANEL"
+
+  # routing-based SSRF: internal ranges x internal paths
+  postern -r req.txt -mode host -probe -sweep private -paths default
+
   # port-scan localhost through a confirmed SSRF
   postern -r req.txt -mode ssrf -p url -ports top
-  # everything, piped through Burp for manual review
+
+  # network scan: every private host x common ports, go gently
+  postern -r req.txt -mode ssrf -p url -sweep private -ports 80,443,6379 -rate 10
+
+  # run everything through Burp and print all results
   postern -r req.txt -mode both -proxy 127.0.0.1:8080 -v
 `
 
