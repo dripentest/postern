@@ -14,6 +14,7 @@ type Params struct {
 	Sweep     []string
 	ScanHosts []string
 	Ports     []int
+	Rebind    []string
 }
 
 type OOB interface {
@@ -66,6 +67,13 @@ func SSRF(fsys fs.FS, p Params, o OOB) ([]Case, error) {
 		n++
 		val := "http://" + ip
 		cases = append(cases, Case{ID: id, Mode: "ssrf", Source: "sweep", Payload: val, Label: val})
+	}
+	for _, h := range p.Rebind {
+		for _, val := range []string{"http://" + h + "/", "http://" + h + "/latest/meta-data/"} {
+			id := fmt.Sprintf("s%04d", n)
+			n++
+			cases = append(cases, Case{ID: id, Mode: "ssrf", Source: "rebind", Payload: val, Label: val})
+		}
 	}
 	return cases, nil
 }

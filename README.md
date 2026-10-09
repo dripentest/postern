@@ -14,6 +14,8 @@ For authorized security testing only.
 - Bypass dictionary: localhost tricks, IP encodings (dec/oct/hex/IPv6), cloud
   metadata (AWS/GCP/Azure/DO/Alibaba/OCI/k8s), schemes (file/gopher/dict/PHP),
   redirect and DNS-rebind payloads
+- DNS rebinding against TOCTOU filters (`-rebind`): builds alternating-DNS hosts
+  via 1u.ms and rbndr.us
 - Host-Header: replace / duplicate / absolute-URI / override headers, routing
   sweeps over private /24 ranges, and internal path replay
 - Port and network scan through a confirmed SSRF
