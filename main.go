@@ -95,28 +95,24 @@ func payloadFS(dir string) (fs.FS, string, error) {
 }
 
 func printBanner(w io.Writer) {
-	var lite, door, name, dim, floor, x string
+	var door, name, dim, x string
 	if bannerColor(w) {
-		lite = "\033[97m"   // blinding light through the opening
-		door = "\033[90m"   // door slab: dim gray
+		door = "\033[90m"   // door: dim gray
 		name = "\033[1;96m" // name: bold cyan
 		dim = "\033[90m"    // taglines: dim gray
-		floor = "\033[37m"  // light spilling on the floor
 		x = "\033[0m"
 	}
-	B := func(s string) string { return lite + s + x }
 	D := func(s string) string { return door + s + x }
 	T := func(c, s string) string { return c + s + x }
 	fmt.Fprintln(w)
-	fmt.Fprintf(w, "   %s %s\n", B("███████████▓▒"), D(".------."))
-	fmt.Fprintf(w, "   %s %s\n", B("█████████████"), D("| .--. |"))
-	fmt.Fprintf(w, "   %s %s     %s\n", B("█████████████"), D("| |  | |"), T(name, "p o s t e r n"))
-	fmt.Fprintf(w, "   %s %s\n", B("█████████████"), D("| '--'o|"))
-	fmt.Fprintf(w, "   %s %s     %s\n", B("█████████████"), D("| .--. |"), T(dim, "SSRF & Host-Header recon"))
-	fmt.Fprintf(w, "   %s %s\n", B("█████████████"), D("| |  | |"))
-	fmt.Fprintf(w, "   %s %s     %s\n", B("███████████▓▒"), D("| '--' |"), T(dim, "slip in through the side gate"))
-	fmt.Fprintf(w, "   %s %s\n", B("█████████▓▒░░"), D("'------'"))
-	fmt.Fprintf(w, "    %s        %s\n", T(floor, "░▒▓███▓▒░"), T(dim, "authorized use only"))
+	fmt.Fprintf(w, "    %s\n", D(".--------."))
+	fmt.Fprintf(w, "    %s\n", D("|  .--.  |"))
+	fmt.Fprintf(w, "    %s      %s\n", D("|  |  |  |"), T(name, "p o s t e r n"))
+	fmt.Fprintf(w, "    %s\n", D("|  '--'  |"))
+	fmt.Fprintf(w, "    %s      %s\n", D("|  .--. o|"), T(dim, "SSRF & Host-Header recon"))
+	fmt.Fprintf(w, "    %s\n", D("|  |  |  |"))
+	fmt.Fprintf(w, "    %s      %s\n", D("|  '--'  |"), T(dim, "slip in through the side gate"))
+	fmt.Fprintf(w, "    %s      %s\n", D("'--------'"), T(dim, "authorized use only"))
 	fmt.Fprintln(w)
 }
 
