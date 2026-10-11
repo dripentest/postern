@@ -94,14 +94,42 @@ localh.st
 metadata
 169.254.170.2
 
-# ========== Auth bypass (server trusts "local" by Host) ==========
-# Check all variants - validation is often a plain string match.
+# ========== Auth bypass to admin panels / dashboards ==========
+# The server trusts "local"/"internal" by Host or by a client-IP header.
+# Validation is often a plain string match - check all variants.
+# Trusted IP forms (also test against X-Forwarded-For / X-Real-IP / ...):
+127.1
+127.0.0.1:443
+127.0.0.1:8080
+::1
+localhost:443
+localhost:8080
+# Internal / trusted hostnames and vhosts that may route to an admin app:
 internal
 intranet
+local
+localhost.localdomain
+internal.local
+intranet.local
 admin
 admin.local
-localhost.localdomain
-local
+admin.internal
+administrator
+adminpanel
+admin-panel
+dashboard
+backend
+backend.local
+management
+console
+portal
+api.internal
+corp
+corp.internal
+staging
+dev
+test
+localhost.admin
 
 # ========== Routing-based SSRF (reverse proxy routes by Host) ==========
 # Common gateways / first hosts of private ranges. A full /8 sweep is NOT

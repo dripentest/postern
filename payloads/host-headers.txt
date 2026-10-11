@@ -28,11 +28,12 @@ X-Override-Host
 X-Backend-Host
 X-Backend-Server
 
-# ---------- Client-IP family (SSRF / ACL bypass) ----------
+# ---------- Client-IP family (SSRF / ACL / admin-panel bypass) ----------
 X-Client-IP
 X-Real-IP
 X-Remote-IP
 X-Remote-Addr
+X-Originating-IP
 X-ProxyUser-Ip
 X-Cluster-Client-IP
 Client-IP
@@ -42,6 +43,13 @@ Fastly-Client-IP
 X-Azure-ClientIP
 X-Azure-SocketIP
 X-OVH-Forwarded
+X-Forwarded-By
+X-Forwarded-For-Original
+Forwarded-For
+X-True-IP
+X-Trusted-IP
+X-Local-IP
+Via
 
 # ---------- RFC 7239 ----------
 Forwarded
