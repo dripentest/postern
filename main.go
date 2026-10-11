@@ -488,14 +488,23 @@ func run(cfg *config) error {
 		FollowRedirects: cfg.followRedirects,
 	}
 
-	fmt.Printf("[*] target: %s  TLS=%v  proxy=%q  method=%s\n", targetHost, useTLS, cfg.proxy, base.Method)
+	clean := !cfg.verbose
+	if clean {
+		fmt.Printf("  Target:  %s  (%s)\n", targetHost, base.Method)
+	} else {
+		fmt.Printf("[*] target: %s  TLS=%v  proxy=%q  method=%s\n", targetHost, useTLS, cfg.proxy, base.Method)
+	}
+	encPfx, redPfx := "  Encoding: ", "  Redirects: "
+	if !clean {
+		encPfx, redPfx = "[*] encode: ", "[*] follow-redirects: "
+	}
 	if enc := parseSweepEnc(cfg.scanEnc); len(ports) > 0 && len(enc) > 0 {
-		fmt.Printf("[*] scan-encode: %s (host part encoded for the scan)\n", strings.Join(enc, ","))
+		fmt.Printf("%shost as %s\n", encPfx, strings.Join(enc, ", "))
 	} else if enc := parseSweepEnc(cfg.sweepEnc); len(enc) > 0 {
-		fmt.Printf("[*] sweep-encode: %s (swept IPs encoded)\n", strings.Join(enc, ","))
+		fmt.Printf("%sinternal IPs as %s\n", encPfx, strings.Join(enc, ", "))
 	}
 	if cfg.followRedirects > 0 {
-		fmt.Printf("[*] follow-redirects: up to %d hop(s)\n", cfg.followRedirects)
+		fmt.Printf("%sup to %d hop(s)\n", redPfx, cfg.followRedirects)
 	}
 	var durs []time.Duration
 	var lastOK sender.Result
@@ -511,14 +520,16 @@ func run(cfg *config) error {
 	}
 	var bl detect.Baseline
 	if len(durs) == 0 {
-		fmt.Printf("[!] baseline failed: %v - diff will be coarser\n", lastErr)
+		fmt.Printf("[!] could not read a baseline response: %v - results will be rougher\n", lastErr)
 		bl = detect.NewBaseline(0, nil, 0, 0, markers)
 	} else {
 		mean, std := meanStd(durs)
 		bl = detect.NewBaseline(lastOK.Status, lastOK.Body, mean, std, markers)
-		fmt.Printf("[*] baseline: status=%d len=%d hash=%s timing=%s±%s (n=%d)\n",
-			lastOK.Status, lastOK.BodyLen, detect.HashBody(lastOK.Body),
-			mean.Round(time.Millisecond), std.Round(time.Millisecond), len(durs))
+		if !clean {
+			fmt.Printf("[*] baseline: status=%d len=%d hash=%s timing=%s±%s (n=%d)\n",
+				lastOK.Status, lastOK.BodyLen, detect.HashBody(lastOK.Body),
+				mean.Round(time.Millisecond), std.Round(time.Millisecond), len(durs))
+		}
 	}
 
 	var cases []gen.Case
@@ -575,20 +586,36 @@ func run(cfg *config) error {
 		return fmt.Errorf("case count %d exceeds -max %d; narrow scope (-probe, smaller -sweep/-paths) or raise -max", len(cases), cfg.max)
 	}
 
-	fmt.Printf("[*] cases: %d | workers: %d | rate: %.0f req/s", len(cases), cfg.conc, cfg.rate)
+	oobNote := ""
 	if oobClient != nil {
-		fmt.Printf(" | OOB: interactsh %s (live)", oobClient.Domain())
-	} else if staticMapper.Enabled() {
-		fmt.Printf(" | OOB: %s (map: %s)", cfg.oobBase, oobMapPath)
+		oobNote = ", blind check via interactsh"
 	}
-	fmt.Println()
-	if cfg.rate > 0 {
-		eta := time.Duration(float64(len(cases)) / cfg.rate * float64(time.Second))
-		fmt.Printf("[*] estimated duration at %.0f req/s: ~%s\n", cfg.rate, eta.Round(time.Second))
+	if clean {
+		eta := ""
+		if cfg.rate > 0 {
+			eta = fmt.Sprintf(", ~%s", time.Duration(float64(len(cases))/cfg.rate*float64(time.Second)).Round(time.Second))
+		}
+		fmt.Printf("  Sending: %d payloads%s%s\n", len(cases), eta, oobNote)
+		if cfg.rate == 0 {
+			fmt.Printf("  %s\n", "Note: rate is unlimited (-rate 0) - this can overwhelm the target; Ctrl-C to abort")
+		}
+		fmt.Println()
 	} else {
-		fmt.Printf("[!] rate is UNLIMITED (-rate 0): this can overwhelm the target; Ctrl-C to abort\n")
+		fmt.Printf("[*] cases: %d | workers: %d | rate: %.0f req/s", len(cases), cfg.conc, cfg.rate)
+		if oobClient != nil {
+			fmt.Printf(" | OOB: interactsh %s (live)", oobClient.Domain())
+		} else if staticMapper.Enabled() {
+			fmt.Printf(" | OOB: %s (map: %s)", cfg.oobBase, oobMapPath)
+		}
+		fmt.Println()
+		if cfg.rate > 0 {
+			eta := time.Duration(float64(len(cases)) / cfg.rate * float64(time.Second))
+			fmt.Printf("[*] estimated duration at %.0f req/s: ~%s\n", cfg.rate, eta.Round(time.Second))
+		} else {
+			fmt.Printf("[!] rate is UNLIMITED (-rate 0): this can overwhelm the target; Ctrl-C to abort\n")
+		}
+		fmt.Println(strings.Repeat("-", 72))
 	}
-	fmt.Println(strings.Repeat("-", 72))
 
 	var outFile *os.File
 	if cfg.out != "" {
@@ -606,11 +633,15 @@ func run(cfg *config) error {
 		nSent, nErr   int64
 		nInt, nStrong int64
 		nOOB          int64
+		nStood        int64
 		consecErr     int64
 		slowStreak    int64
 		tripped       int32
 		clMu          sync.Mutex
 		clusters      = map[string]*cluster{}
+		notable       = map[string]*noteCat{} // category -> count+examples (differs from baseline)
+		findMu        sync.Mutex
+		findings      []finding
 	)
 
 	trip := func(reason string) {
@@ -683,7 +714,7 @@ func run(cfg *config) error {
 			atomic.StoreInt64(&slowStreak, 0)
 		}
 
-		recordCluster(fmt.Sprintf("%d/%d", res.Status, res.BodyLen), short(c.Label, 50))
+		recordCluster(fmt.Sprintf("%d/%d", res.Status, res.BodyLen), short(labelTag(c), 60))
 		sig := detect.Analyze(bl, res.Status, res.Body, res.Duration, markers, cfg.lenPct, c.Payload, res.Header, cfg.timing)
 		if res.Redirects > 0 {
 			sig.Interesting = true
@@ -691,12 +722,32 @@ func run(cfg *config) error {
 		}
 		if sig.Strong {
 			atomic.AddInt64(&nStrong, 1)
+			findMu.Lock()
+			if len(findings) < 50 {
+				findings = append(findings, finding{what: humanizeStrong(sig.Reasons), label: short(labelTag(c), 60)})
+			}
+			findMu.Unlock()
 		}
 		if sig.Interesting {
 			atomic.AddInt64(&nInt, 1)
+			atomic.AddInt64(&nStood, 1)
+			cat := statusClass(res.Status)
+			clMu.Lock()
+			nb := notable[cat]
+			if nb == nil {
+				nb = &noteCat{}
+				notable[cat] = nb
+			}
+			nb.count++
+			if len(nb.ex) < 3 {
+				nb.ex = append(nb.ex, short(labelTag(c), 60))
+			}
+			clMu.Unlock()
 		}
 
-		if sig.Interesting || cfg.verbose || c.OOB != "" {
+		// Verbose mode prints every noteworthy request; clean mode stays quiet and
+		// lets the live progress line + the final summary do the talking.
+		if cfg.verbose && (sig.Interesting || c.OOB != "") {
 			tag := "    "
 			switch {
 			case sig.Strong:
@@ -716,6 +767,36 @@ func run(cfg *config) error {
 			printMu.Unlock()
 		}
 		writeJSON(outFile, &printMu, c, res, sig, nil)
+	}
+
+	// Clean mode on a TTY shows a single, self-updating progress line instead of
+	// one line per request. Piped/verbose/silent runs skip it (no control chars).
+	showProgress := clean && !cfg.silent && isTTY(os.Stdout)
+	progDone := make(chan struct{})
+	if showProgress {
+		go func() {
+			t := time.NewTicker(150 * time.Millisecond)
+			defer t.Stop()
+			total := int64(len(cases))
+			draw := func() {
+				sent := atomic.LoadInt64(&nSent)
+				pct := int64(0)
+				if total > 0 {
+					pct = sent * 100 / total
+				}
+				printMu.Lock()
+				fmt.Printf("\r\033[K  scanning... %d/%d (%d%%)   stood out: %d", sent, total, pct, atomic.LoadInt64(&nStood))
+				printMu.Unlock()
+			}
+			for {
+				select {
+				case <-progDone:
+					return
+				case <-t.C:
+					draw()
+				}
+			}
+		}()
 	}
 
 	var ticker *time.Ticker
@@ -766,27 +847,56 @@ feed:
 	}
 	close(casesCh)
 	wg.Wait()
-
-	fmt.Println(strings.Repeat("-", 72))
-	if ctx.Err() != nil && atomic.LoadInt32(&tripped) == 0 {
-		fmt.Printf("[!] aborted by user (Ctrl-C)\n")
+	if showProgress {
+		close(progDone)
+		printMu.Lock()
+		fmt.Print("\r\033[K")
+		printMu.Unlock()
 	}
-	fmt.Printf("[*] done: sent=%d interesting=%d strong=%d errors=%d oob-sent=%d\n",
-		nSent, nInt, nStrong, nErr, nOOB)
-	printClusters(clusters)
 
+	aborted := ctx.Err() != nil && atomic.LoadInt32(&tripped) == 0
+
+	// Wait for delayed OOB callbacks before the summary so confirmed hits are
+	// counted in it.
+	var oobHits int
 	if oobClient != nil {
 		if nOOB > 0 && ctx.Err() == nil && cfg.oobWait > 0 {
-			fmt.Printf("[*] waiting %s for delayed OOB callbacks (Ctrl-C to skip)...\n", cfg.oobWait)
+			if clean {
+				fmt.Printf("  Waiting %s for out-of-band callbacks (Ctrl-C to skip)...\n", cfg.oobWait)
+			} else {
+				fmt.Printf("[*] waiting %s for delayed OOB callbacks (Ctrl-C to skip)...\n", cfg.oobWait)
+			}
 			waitInterruptible(ctx, cfg.oobWait)
 		}
 		hits := oobClient.Hits()
-		fmt.Printf("[*] OOB (interactsh %s): %d confirmed callback(s)\n", oobClient.Domain(), len(hits))
+		oobHits = len(hits)
 		for _, h := range hits {
-			fmt.Printf("    [%s] %s  from %s\n", h.Protocol, h.Label, h.Remote)
+			findMu.Lock()
+			if len(findings) < 50 {
+				findings = append(findings, finding{what: "out-of-band callback (" + h.Protocol + ")", label: short(h.Label, 60)})
+			}
+			findMu.Unlock()
 		}
-	} else if staticMapper.Enabled() {
-		fmt.Printf("[*] check interactsh-client for callbacks; payload mapping in %s\n", oobMapPath)
+	}
+
+	if clean {
+		printSummaryClean(os.Stdout, notable, findings, nSent, nErr, bl.Status, aborted, cfg.out)
+	} else {
+		fmt.Println(strings.Repeat("-", 72))
+		if aborted {
+			fmt.Printf("[!] aborted by user (Ctrl-C)\n")
+		}
+		fmt.Printf("[*] done: sent=%d interesting=%d strong=%d errors=%d oob-sent=%d\n",
+			nSent, nInt, nStrong, nErr, nOOB)
+		printClusters(clusters)
+		if oobClient != nil {
+			fmt.Printf("[*] OOB (interactsh %s): %d confirmed callback(s)\n", oobClient.Domain(), oobHits)
+			for _, h := range oobClient.Hits() {
+				fmt.Printf("    [%s] %s  from %s\n", h.Protocol, h.Label, h.Remote)
+			}
+		} else if staticMapper.Enabled() {
+			fmt.Printf("[*] check interactsh-client for callbacks; payload mapping in %s\n", oobMapPath)
+		}
 	}
 	return nil
 }
@@ -891,6 +1001,195 @@ func printClusters(clusters map[string]*cluster) {
 	for _, e := range all[:limit] {
 		fmt.Printf("    %6dx  %-14s  e.g. %s\n", e.c.count, e.sig, short(e.c.example, 50))
 	}
+}
+
+type finding struct {
+	what  string // human-readable description of the evidence
+	label string // the payload / case that produced it
+}
+
+func isTTY(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := f.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// humanizeStrong turns detection reasons ("marker:root:x:0:0", "reflected-body")
+// into a plain phrase a non-expert can act on.
+func humanizeStrong(reasons []string) string {
+	for _, r := range reasons {
+		switch {
+		case strings.HasPrefix(r, "marker:"):
+			m := strings.ToLower(strings.TrimPrefix(r, "marker:"))
+			switch {
+			case strings.Contains(m, "root:x:0:0"), strings.Contains(m, "nologin"), strings.Contains(m, "/bin/bash"), strings.Contains(m, "daemon:"):
+				return "read /etc/passwd"
+			case strings.Contains(m, "localhost"):
+				return "read /etc/hosts"
+			case strings.Contains(m, "ami-id"), strings.Contains(m, "instance-id"), strings.Contains(m, "iam/security"), strings.Contains(m, "accesskeyid"), strings.Contains(m, "secretaccesskey"), strings.Contains(m, "security-credentials"):
+				return "reached AWS metadata / credentials"
+			case strings.Contains(m, "computemetadata"), strings.Contains(m, "access_token"), strings.Contains(m, "service-account"), strings.Contains(m, "oauth2"):
+				return "reached GCP metadata / token"
+			case strings.Contains(m, "vmid"), strings.Contains(m, "subscriptionid"), strings.Contains(m, "\"compute\":"):
+				return "reached Azure metadata"
+			case strings.Contains(m, "redis_version"), strings.Contains(m, "+pong"), strings.Contains(m, "stat pid"):
+				return "reached an internal service (Redis/Memcached)"
+			case strings.Contains(m, "ssh-2.0"), strings.Contains(m, "ssh-1.99"), strings.Contains(m, "vsftpd"), strings.Contains(m, "proftpd"), strings.Contains(m, "esmtp"):
+				return "reached an internal service (banner leaked)"
+			case strings.Contains(m, "phpmyadmin"), strings.Contains(m, "index of"), strings.Contains(m, "directory listing"):
+				return "reached an internal web page"
+			default:
+				return "matched a known response signature"
+			}
+		case strings.HasPrefix(r, "reflected"):
+			return "server fetched our URL (reflected back)"
+		}
+	}
+	if len(reasons) > 0 && reasons[0] != "-" {
+		return reasons[0]
+	}
+	return "notable response"
+}
+
+type noteCat struct {
+	count int
+	ex    []string
+}
+
+func statusClass(s int) string {
+	switch {
+	case s == 0:
+		return "NORESP"
+	case s >= 200 && s < 300:
+		return "BYPASS"
+	case s >= 300 && s < 400:
+		return "OTHER"
+	case s >= 500:
+		return "ERROR"
+	case s >= 400 && s < 500:
+		return "BLOCKED"
+	default:
+		return "OTHER"
+	}
+}
+
+func describeStatus(status int) string {
+	switch {
+	case status == 0:
+		return "no response"
+	case status >= 200 && status < 300:
+		return fmt.Sprintf("HTTP %d - OK", status)
+	case status >= 300 && status < 400:
+		return fmt.Sprintf("HTTP %d - redirect", status)
+	case status == 401 || status == 403:
+		return fmt.Sprintf("HTTP %d - blocked", status)
+	case status == 404:
+		return fmt.Sprintf("HTTP %d - not found", status)
+	case status >= 400 && status < 500:
+		return fmt.Sprintf("HTTP %d", status)
+	case status >= 500:
+		return fmt.Sprintf("HTTP %d - server error", status)
+	default:
+		return fmt.Sprintf("HTTP %d", status)
+	}
+}
+
+// printSummaryClean is the human-facing wrap-up: confirmed findings, the response
+// classes that differed from the baseline, a one-line verdict, and where to dig in.
+// Only responses that differ from the baseline count as "notable"; everything that
+// looked like the baseline is reported as a single typical-response total.
+func printSummaryClean(w io.Writer, notable map[string]*noteCat, findings []finding, sent, nErr int64, baselineStatus int, aborted bool, outPath string) {
+	color := bannerColor(w)
+	var grn, yel, dim, bold, rst string
+	if color {
+		grn, yel, dim, bold, rst = "\033[32m", "\033[33m", "\033[90m", "\033[1m", "\033[0m"
+	}
+
+	fmt.Fprintln(w)
+	if aborted {
+		fmt.Fprintf(w, "  %sStopped early (Ctrl-C / circuit breaker).%s\n", yel, rst)
+	}
+	fmt.Fprintf(w, "  %sResults%s\n\n", bold, rst)
+
+	if len(findings) > 0 {
+		fmt.Fprintf(w, "  %s✓ Confirmed SSRF: %d%s\n", grn, len(findings), rst)
+		shown, extra := findings, 0
+		if len(shown) > 10 {
+			extra, shown = len(shown)-10, shown[:10]
+		}
+		for _, f := range shown {
+			fmt.Fprintf(w, "       %s%s%s  —  %s\n", grn, f.what, rst, f.label)
+		}
+		if extra > 0 {
+			fmt.Fprintf(w, "       %s+%d more%s\n", dim, extra, rst)
+		}
+		fmt.Fprintln(w)
+	}
+
+	notableTotal := 0
+	for _, b := range notable {
+		notableTotal += b.count
+	}
+
+	labels := map[string]string{
+		"BYPASS": grn + "● reached the backend (HTTP 2xx)" + rst,
+		"ERROR":  yel + "● got past the filter, backend errored (HTTP 5xx)" + rst,
+		"BLOCKED": "● blocked by the filter (HTTP 4xx)",
+		"OTHER":   "● redirect / other response",
+	}
+
+	fmt.Fprintf(w, "  %d payloads sent.\n", sent)
+	if notableTotal == 0 && len(findings) == 0 {
+		fmt.Fprintf(w, "  %sEvery payload got the same response as the baseline (%s) - nothing stood out.%s\n\n",
+			dim, describeStatus(baselineStatus), rst)
+	} else {
+		fmt.Fprintf(w, "  Responses that differed from the baseline (%s):\n\n", describeStatus(baselineStatus))
+		for _, cat := range []string{"BYPASS", "ERROR", "BLOCKED", "OTHER"} {
+			b := notable[cat]
+			if b == nil {
+				continue
+			}
+			fmt.Fprintf(w, "  %s  ×%d\n", labels[cat], b.count)
+			for _, e := range b.ex {
+				fmt.Fprintf(w, "       %s\n", e)
+			}
+		}
+		if typical := sent - int64(notableTotal); typical > 0 {
+			fmt.Fprintf(w, "  %s○ looked like the baseline (%s)  ×%d%s\n", dim, describeStatus(baselineStatus), typical, rst)
+		}
+		fmt.Fprintln(w)
+	}
+	if nErr > 0 {
+		fmt.Fprintf(w, "  %s○ no response / network error  ×%d%s\n\n", dim, nErr, rst)
+	}
+
+	switch {
+	case len(findings) > 0:
+		fmt.Fprintf(w, "  → SSRF confirmed (above). Start there.\n")
+	case notable["BYPASS"] != nil:
+		fmt.Fprintf(w, "  → Some payloads reached the backend - inspect their responses (-v or -o).\n")
+	case notable["ERROR"] != nil:
+		fmt.Fprintf(w, "  → The filter let some payloads through (the backend errored on them).\n")
+		fmt.Fprintf(w, "    The filter is bypassable; retry against a target whose fetcher resolves these forms.\n")
+	case notable["BLOCKED"] != nil:
+		fmt.Fprintf(w, "  → These payloads were blocked by the filter - nothing got through.\n")
+		fmt.Fprintf(w, "    Try other encodings, or a blind out-of-band check with -interactsh.\n")
+	case notableTotal > 0:
+		fmt.Fprintf(w, "  → Some responses differed from the baseline - worth a manual look.\n")
+	default:
+		fmt.Fprintf(w, "  → Nothing stood out; the target handled every payload the same way.\n")
+	}
+
+	tip := "  More detail: -v"
+	if outPath == "" {
+		tip += "   ·   save everything: -o results.jsonl"
+	} else {
+		tip += "   ·   full data saved to " + outPath
+	}
+	fmt.Fprintf(w, "%s%s%s\n", dim, tip, rst)
 }
 
 var (
