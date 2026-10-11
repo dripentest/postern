@@ -61,6 +61,7 @@ type config struct {
 	evil             string
 	itarget          string
 	sweep            string
+	sweepEnc         string
 	rebind           string
 	ports            string
 	scanHost         string
@@ -172,6 +173,7 @@ INJECTION:
 
 SSRF:
   -sweep <spec>           /24 last-octet sweep: "private" or "10.10.10,192.168.56"
+  -sweep-encode <spec>    encode swept IPs to bypass filters: "all" or "decimal,hex"
   -rebind <ext:int>       DNS-rebinding hosts (1u.ms, rbndr.us) for TOCTOU filters
   -ports <spec>           port-scan via SSRF: top | all | CSV | range (80,6379|1-1024)
   -scan-host <host>       host to port-scan  (default 127.0.0.1)
@@ -277,6 +279,7 @@ func parseFlags() *config {
 	flag.StringVar(&cfg.evil, "evil", "", "value for {{EVIL}} host poisoning (else OOB)")
 	flag.StringVar(&cfg.itarget, "itarget", "127.0.0.1", "value for {{TARGET}} internal address")
 	flag.StringVar(&cfg.sweep, "sweep", "", "last-octet /24 sweep: 'private' or custom list like '10.10.10,192.168.56'")
+	flag.StringVar(&cfg.sweepEnc, "sweep-encode", "", "encode swept IPs to bypass filters: 'all' or CSV 'decimal,hex,octal' (use after a bypass is found)")
 	flag.StringVar(&cfg.rebind, "rebind", "", "DNS rebinding bypass: 'ext:int' IPs, or 'int' (ext defaults 1.2.3.4); builds 1u.ms/rbndr.us hosts")
 	flag.StringVar(&cfg.ports, "ports", "", "post-SSRF scan: port spec 'top', CSV '80,6379', or range '1-1024' (ssrf mode)")
 	flag.StringVar(&cfg.scanHost, "scan-host", "", "post-SSRF scan: host to port-scan (default 127.0.0.1; or use -sweep for a network scan)")
@@ -456,7 +459,7 @@ func run(cfg *config) error {
 		}
 		hostHdr = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
 	}
-	params := gen.Params{LHOST: cfg.lhost, TARGET: cfg.itarget, EVIL: cfg.evil, HOST: hostHdr, Sweep: parseSweep(cfg.sweep), ScanHosts: scanHosts, Ports: ports, Rebind: rebindHosts}
+	params := gen.Params{LHOST: cfg.lhost, TARGET: cfg.itarget, EVIL: cfg.evil, HOST: hostHdr, Sweep: parseSweep(cfg.sweep), SweepEnc: parseSweepEnc(cfg.sweepEnc), ScanHosts: scanHosts, Ports: ports, Rebind: rebindHosts}
 
 	sopts := sender.Options{
 		DialAddr: dialAddr, TLS: useTLS, Proxy: cfg.proxy, TargetHost: targetHost,
@@ -622,7 +625,7 @@ func run(cfg *config) error {
 			}
 			if cfg.verbose {
 				printMu.Lock()
-				fmt.Printf("[err] %-6s %-40s %v\n", c.ID, short(c.Label, 40), res.Err)
+				fmt.Printf("[err] %-6s %-40s %v\n", c.ID, short(labelTag(c), 40), res.Err)
 				printMu.Unlock()
 			}
 			writeJSON(outFile, &printMu, c, res, detect.Signal{}, err)
@@ -657,7 +660,7 @@ func run(cfg *config) error {
 				tag = "oob "
 			}
 			line := fmt.Sprintf("[%-6s] %-6s %3d %7d  %-28s | %s",
-				tag, c.ID, res.Status, res.BodyLen, short(strings.Join(sig.Reasons, ","), 28), short(c.Label, 60))
+				tag, c.ID, res.Status, res.BodyLen, short(strings.Join(sig.Reasons, ","), 28), short(labelTag(c), 60))
 			if c.OOB != "" {
 				line += "  (OOB: " + c.OOB + ")"
 			}
@@ -959,7 +962,7 @@ func writeJSON(f *os.File, mu *sync.Mutex, c gen.Case, res sender.Result, sig de
 	}
 	rec := map[string]interface{}{
 		"id": c.ID, "mode": c.Mode, "source": c.Source,
-		"payload": c.Payload, "header": c.Header, "variant": c.Variant,
+		"payload": c.Payload, "header": c.Header, "variant": c.Variant, "tag": c.Tag,
 		"oob": c.OOB, "status": res.Status, "len": res.BodyLen,
 		"dur_ms":      res.Duration.Milliseconds(),
 		"interesting": sig.Interesting, "strong": sig.Strong,
@@ -1153,6 +1156,23 @@ func ipv4Hex(s string) (string, bool) {
 	return fmt.Sprintf("%02x%02x%02x%02x", ip[0], ip[1], ip[2], ip[3]), true
 }
 
+func parseSweepEnc(s string) []string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	if strings.EqualFold(s, "all") {
+		return []string{"decimal", "hex", "octal", "mixed", "dotless", "leading", "ipv6"}
+	}
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func parseSweep(s string) []string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -1185,6 +1205,13 @@ func loadMarkers(pfs fs.FS) ([]string, error) {
 		out = append(out, ln)
 	}
 	return out, nil
+}
+
+func labelTag(c gen.Case) string {
+	if c.Tag == "" {
+		return c.Label
+	}
+	return c.Label + " [" + c.Tag + "]"
 }
 
 func short(s string, n int) string {
