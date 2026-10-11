@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -15,34 +16,159 @@ import (
 const maxBody = 4 << 20
 
 type Options struct {
-	DialAddr   string
-	TLS        bool
-	Proxy      string
-	TargetHost string
-	Method     string
-	SNI        string
-	Insecure   bool
-	Timeout    time.Duration
-	Retries    int
+	DialAddr        string
+	TLS             bool
+	Proxy           string
+	TargetHost      string
+	Method          string
+	SNI             string
+	Insecure        bool
+	Timeout         time.Duration
+	Retries         int
+	FollowRedirects int // max 3xx hops to follow (0 = don't follow)
 }
 
 type Result struct {
-	Status   int
-	BodyLen  int
-	Body     []byte
-	Header   http.Header
-	Err      error
-	Kind     string // on error: "dial" | "tls" | "write" | "read"
-	Duration time.Duration
+	Status    int
+	BodyLen   int
+	Body      []byte
+	Header    http.Header
+	Err       error
+	Kind      string // on error: "dial" | "tls" | "write" | "read"
+	Duration  time.Duration
+	Redirects int // number of 3xx hops followed to reach this response
 }
 
 func Send(opts Options, reqBytes []byte) Result {
+	start := time.Now()
+	res := sendWithRetries(opts, reqBytes)
+
+	// Follow 3xx hops (opt-in): the fuzzed app itself may 30x the client, and the
+	// final response - not the redirect - carries the SSRF/rebind outcome.
+	hops := 0
+	for res.Err == nil && opts.FollowRedirects > 0 && hops < opts.FollowRedirects && isRedirect(res.Status) {
+		loc := res.Header.Get("Location")
+		if loc == "" {
+			break
+		}
+		nopts, nreq, ok := nextHop(opts, reqBytes, loc, res.Status)
+		if !ok {
+			break
+		}
+		opts, reqBytes = nopts, nreq
+		res = sendWithRetries(opts, reqBytes)
+		hops++
+	}
+	res.Redirects = hops
+	res.Duration = time.Since(start)
+	return res
+}
+
+func sendWithRetries(opts Options, reqBytes []byte) Result {
 	res := sendOnce(opts, reqBytes)
 	for attempt := 0; res.Err != nil && attempt < opts.Retries; attempt++ {
 		time.Sleep(150 * time.Millisecond)
 		res = sendOnce(opts, reqBytes)
 	}
 	return res
+}
+
+func isRedirect(status int) bool {
+	switch status {
+	case 301, 302, 303, 307, 308:
+		return true
+	}
+	return false
+}
+
+// nextHop builds the options and raw request for the next redirect hop: it
+// resolves Location against the current URL, retargets the dial/Host/SNI when the
+// host changes, and downgrades to GET (dropping the body) for 301/302/303.
+func nextHop(opts Options, reqBytes []byte, loc string, status int) (Options, []byte, bool) {
+	line, headers, body := splitRequest(reqBytes)
+	parts := strings.SplitN(line, " ", 3)
+	if len(parts) < 3 {
+		return opts, nil, false
+	}
+	method, curTarget, proto := parts[0], parts[1], parts[2]
+
+	scheme := "http"
+	if opts.TLS {
+		scheme = "https"
+	}
+	cur := &url.URL{Scheme: scheme, Host: opts.TargetHost}
+	if u, err := url.Parse(curTarget); err == nil {
+		if u.IsAbs() {
+			cur = u
+		} else {
+			cur.Path, cur.RawQuery = u.Path, u.RawQuery
+		}
+	}
+	next, err := cur.Parse(strings.TrimSpace(loc))
+	if err != nil || next.Host == "" {
+		return opts, nil, false
+	}
+
+	newTLS := next.Scheme == "https"
+	host := next.Hostname()
+	port := next.Port()
+	if port == "" {
+		if newTLS {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+	hostport := net.JoinHostPort(host, port)
+
+	opts.TLS = newTLS
+	opts.SNI = host
+	opts.TargetHost = next.Host
+	if opts.Proxy == "" {
+		opts.DialAddr = hostport
+	}
+
+	// 303 always, and 301/302 by common practice, switch to GET without a body.
+	drop := status == 303 || status == 301 || status == 302
+	if drop {
+		method = "GET"
+		body = nil
+	}
+
+	target := next.RequestURI()
+	var b bytes.Buffer
+	b.WriteString(method + " " + target + " " + proto + "\r\n")
+	for _, h := range headers {
+		lower := strings.ToLower(h)
+		if strings.HasPrefix(lower, "host:") {
+			continue
+		}
+		if drop && (strings.HasPrefix(lower, "content-length:") || strings.HasPrefix(lower, "content-type:")) {
+			continue
+		}
+		b.WriteString(h + "\r\n")
+	}
+	b.WriteString("Host: " + next.Host + "\r\n\r\n")
+	if len(body) > 0 {
+		b.Write(body)
+	}
+	return opts, b.Bytes(), true
+}
+
+// splitRequest splits a raw HTTP/1.x request into its request line, header lines
+// (without CRLF), and body.
+func splitRequest(b []byte) (line string, headers []string, body []byte) {
+	sep := []byte("\r\n\r\n")
+	head := b
+	if i := bytes.Index(b, sep); i >= 0 {
+		head = b[:i]
+		body = b[i+len(sep):]
+	}
+	lines := strings.Split(string(head), "\r\n")
+	if len(lines) == 0 {
+		return "", nil, body
+	}
+	return lines[0], lines[1:], body
 }
 
 func sendOnce(opts Options, reqBytes []byte) Result {

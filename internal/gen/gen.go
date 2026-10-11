@@ -9,15 +9,17 @@ import (
 )
 
 type Params struct {
-	LHOST     string
-	TARGET    string
-	EVIL      string
-	HOST      string
-	Sweep     []string
-	ScanHosts []string
-	Ports     []int
-	Rebind    []string
-	SweepEnc  []string
+	LHOST      string
+	TARGET     string
+	EVIL       string
+	HOST       string
+	Sweep      []string
+	ScanHosts  []string
+	Ports      []int
+	Rebind     []string
+	SweepEnc   []string
+	ScanEnc    []string
+	RebindOnly bool
 }
 
 type OOB interface {
@@ -45,6 +47,9 @@ var ssrfFiles = []string{"ssrf-targets.txt", "metadata.txt", "schemes.txt", "red
 func SSRF(fsys fs.FS, p Params, o OOB) ([]Case, error) {
 	if len(p.Ports) > 0 {
 		return scanCases(p), nil
+	}
+	if p.RebindOnly {
+		return rebindCases(p, 0), nil
 	}
 	var cases []Case
 	n := 0
@@ -91,6 +96,13 @@ func SSRF(fsys fs.FS, p Params, o OOB) ([]Case, error) {
 		val := "http://" + ip
 		cases = append(cases, Case{ID: id, Mode: "ssrf", Source: "sweep", Payload: val, Label: val})
 	}
+	cases = append(cases, rebindCases(p, n)...)
+	return cases, nil
+}
+
+func rebindCases(p Params, start int) []Case {
+	var cases []Case
+	n := start
 	for _, h := range p.Rebind {
 		for _, val := range []string{"http://" + h + "/", "http://" + h + "/latest/meta-data/"} {
 			id := fmt.Sprintf("s%04d", n)
@@ -98,7 +110,7 @@ func SSRF(fsys fs.FS, p Params, o OOB) ([]Case, error) {
 			cases = append(cases, Case{ID: id, Mode: "ssrf", Source: "rebind", Payload: val, Label: val})
 		}
 	}
-	return cases, nil
+	return cases
 }
 
 func LoadHostHeaders(fsys fs.FS) ([]string, error) {
@@ -122,6 +134,7 @@ func Host(fsys fs.FS, p Params, o OOB, allow map[string]bool, paths []string) ([
 
 	var cases []Case
 	n := 0
+	seen := map[string]bool{}
 	for _, h := range headers {
 		if allow != nil && !allow[h] {
 			continue
@@ -145,6 +158,14 @@ func Host(fsys fs.FS, p Params, o OOB, allow map[string]bool, paths []string) ([
 					if skip {
 						continue
 					}
+					// Drop exact duplicates: host-values.txt repeats some values
+					// across sections (e.g. 127.0.0.1 forms), which otherwise fire
+					// the same request twice under different IDs.
+					key := h + "\x00" + v[0] + "\x00" + path + "\x00" + val
+					if seen[key] {
+						continue
+					}
+					seen[key] = true
 					n++
 					label := fmt.Sprintf("%s: %s [%s]", h, val, v[0])
 					if path != "" {
@@ -166,18 +187,37 @@ func scanCases(p Params) []Case {
 	if len(hosts) == 0 {
 		hosts = []string{"127.0.0.1"}
 	}
+	// Encoding for the host part so a filter that blocks plain internal IPs can be
+	// bypassed during the scan. -scan-encode wins for -scan-host; otherwise reuse
+	// -sweep-encode (a sweep feeds these same hosts). Only helps when the backend
+	// fetcher actually resolves the encoded form.
+	enc := p.ScanEnc
+	if len(enc) == 0 {
+		enc = p.SweepEnc
+	}
 	var cases []Case
 	n := 0
-	for _, host := range hosts {
+	emit := func(host, tag string) {
 		for _, port := range p.Ports {
 			scheme := "http"
 			if port == 443 || port == 8443 {
 				scheme = "https"
 			}
 			val := fmt.Sprintf("%s://%s:%d", scheme, host, port)
-			cases = append(cases, Case{ID: fmt.Sprintf("p%05d", n), Mode: "ssrf", Source: "scan", Payload: val, Label: val})
+			cases = append(cases, Case{ID: fmt.Sprintf("p%05d", n), Mode: "ssrf", Source: "scan", Payload: val, Label: val, Tag: tag})
 			n++
 		}
+	}
+	for _, host := range hosts {
+		if len(enc) > 0 {
+			if reps := ipenc.EncodeKinds(host, enc); len(reps) > 0 {
+				for _, r := range reps {
+					emit(r.Value, r.Kind)
+				}
+				continue
+			}
+		}
+		emit(host, "")
 	}
 	return cases
 }

