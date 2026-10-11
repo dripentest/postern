@@ -681,6 +681,26 @@ func run(cfg *config) error {
 	}
 	var nLive int64
 	const liveCap = 25
+	// emitLive surfaces a high-value hit the instant it happens (above the progress
+	// line), so the user can act or Ctrl-C mid-scan. Capped to avoid flooding.
+	emitLive := func(msg, label string) {
+		if !clean {
+			return
+		}
+		n := atomic.AddInt64(&nLive, 1)
+		if n > liveCap {
+			return
+		}
+		printMu.Lock()
+		if showProgress {
+			fmt.Print("\r\033[K")
+		}
+		fmt.Printf("  %s✓ %s%s  %s\n", liveGrn, msg, liveRst, label)
+		if n == liveCap {
+			fmt.Printf("  %s… more below in the summary%s\n", liveGrn, liveRst)
+		}
+		printMu.Unlock()
+	}
 
 	process := func(c gen.Case) {
 		req, err := buildRequest(base, c, cfg.param, useTLS, base.Host)
@@ -738,22 +758,7 @@ func run(cfg *config) error {
 				findings = append(findings, finding{what: what, label: short(labelTag(c), 60)})
 			}
 			findMu.Unlock()
-			// Clean mode: surface confirmed findings the moment they happen, so the
-			// user can act (or Ctrl-C) without waiting for the scan to finish.
-			if clean {
-				n := atomic.AddInt64(&nLive, 1)
-				if n <= liveCap {
-					printMu.Lock()
-					if showProgress {
-						fmt.Print("\r\033[K")
-					}
-					fmt.Printf("  %s✓ %s%s  %s\n", liveGrn, what, liveRst, short(labelTag(c), 60))
-					if n == liveCap {
-						fmt.Printf("  %s… more confirmed hits below in the summary%s\n", liveGrn, liveRst)
-					}
-					printMu.Unlock()
-				}
-			}
+			emitLive(what, short(labelTag(c), 60))
 		}
 		if sig.Interesting {
 			atomic.AddInt64(&nInt, 1)
@@ -770,6 +775,12 @@ func run(cfg *config) error {
 				nb.ex = append(nb.ex, short(labelTag(c), 60))
 			}
 			clMu.Unlock()
+			// A 2xx that differs from the baseline = reached the backend / got into
+			// an admin panel: the key host-mode win, so stream it live too (5xx/4xx
+			// stay quiet to avoid noise).
+			if !sig.Strong && cat == "BYPASS" {
+				emitLive(fmt.Sprintf("reached the backend (HTTP %d)", res.Status), short(labelTag(c), 60))
+			}
 		}
 
 		// Verbose mode prints every noteworthy request; clean mode stays quiet and
