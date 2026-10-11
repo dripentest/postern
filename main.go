@@ -443,7 +443,17 @@ func run(cfg *config) error {
 	if err != nil {
 		return err
 	}
-	params := gen.Params{LHOST: cfg.lhost, TARGET: cfg.itarget, EVIL: cfg.evil, HOST: sni, Sweep: parseSweep(cfg.sweep), ScanHosts: scanHosts, Ports: ports, Rebind: rebindHosts}
+	// {{HOST}} is the whitelisted domain the app sees (Host header), not the dial
+	// target: with -url pointing at a lab IP, the Host header still carries the domain.
+	hostHdr := sni
+	if base.Host != "" {
+		h := base.Host
+		if hh, _, err := net.SplitHostPort(h); err == nil {
+			h = hh
+		}
+		hostHdr = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
+	}
+	params := gen.Params{LHOST: cfg.lhost, TARGET: cfg.itarget, EVIL: cfg.evil, HOST: hostHdr, Sweep: parseSweep(cfg.sweep), ScanHosts: scanHosts, Ports: ports, Rebind: rebindHosts}
 
 	sopts := sender.Options{
 		DialAddr: dialAddr, TLS: useTLS, Proxy: cfg.proxy, TargetHost: targetHost,

