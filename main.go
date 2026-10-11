@@ -489,6 +489,14 @@ func run(cfg *config) error {
 	}
 
 	fmt.Printf("[*] target: %s  TLS=%v  proxy=%q  method=%s\n", targetHost, useTLS, cfg.proxy, base.Method)
+	if enc := parseSweepEnc(cfg.scanEnc); len(ports) > 0 && len(enc) > 0 {
+		fmt.Printf("[*] scan-encode: %s (host part encoded for the scan)\n", strings.Join(enc, ","))
+	} else if enc := parseSweepEnc(cfg.sweepEnc); len(enc) > 0 {
+		fmt.Printf("[*] sweep-encode: %s (swept IPs encoded)\n", strings.Join(enc, ","))
+	}
+	if cfg.followRedirects > 0 {
+		fmt.Printf("[*] follow-redirects: up to %d hop(s)\n", cfg.followRedirects)
+	}
 	var durs []time.Duration
 	var lastOK sender.Result
 	var lastErr error
