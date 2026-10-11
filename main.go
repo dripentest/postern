@@ -672,6 +672,16 @@ func run(cfg *config) error {
 		slowCut = 3 * time.Second
 	}
 
+	// Clean mode on a TTY shows a single self-updating progress line (declared
+	// here so process can clear it before printing a live finding above it).
+	showProgress := clean && !cfg.silent && isTTY(os.Stdout)
+	var liveGrn, liveRst string
+	if bannerColor(os.Stdout) {
+		liveGrn, liveRst = "\033[32m", "\033[0m"
+	}
+	var nLive int64
+	const liveCap = 25
+
 	process := func(c gen.Case) {
 		req, err := buildRequest(base, c, cfg.param, useTLS, base.Host)
 		if err != nil {
@@ -722,11 +732,28 @@ func run(cfg *config) error {
 		}
 		if sig.Strong {
 			atomic.AddInt64(&nStrong, 1)
+			what := humanizeStrong(sig.Reasons)
 			findMu.Lock()
 			if len(findings) < 50 {
-				findings = append(findings, finding{what: humanizeStrong(sig.Reasons), label: short(labelTag(c), 60)})
+				findings = append(findings, finding{what: what, label: short(labelTag(c), 60)})
 			}
 			findMu.Unlock()
+			// Clean mode: surface confirmed findings the moment they happen, so the
+			// user can act (or Ctrl-C) without waiting for the scan to finish.
+			if clean {
+				n := atomic.AddInt64(&nLive, 1)
+				if n <= liveCap {
+					printMu.Lock()
+					if showProgress {
+						fmt.Print("\r\033[K")
+					}
+					fmt.Printf("  %s✓ %s%s  %s\n", liveGrn, what, liveRst, short(labelTag(c), 60))
+					if n == liveCap {
+						fmt.Printf("  %s… more confirmed hits below in the summary%s\n", liveGrn, liveRst)
+					}
+					printMu.Unlock()
+				}
+			}
 		}
 		if sig.Interesting {
 			atomic.AddInt64(&nInt, 1)
@@ -769,9 +796,6 @@ func run(cfg *config) error {
 		writeJSON(outFile, &printMu, c, res, sig, nil)
 	}
 
-	// Clean mode on a TTY shows a single, self-updating progress line instead of
-	// one line per request. Piped/verbose/silent runs skip it (no control chars).
-	showProgress := clean && !cfg.silent && isTTY(os.Stdout)
 	progDone := make(chan struct{})
 	if showProgress {
 		go func() {
