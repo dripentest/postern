@@ -52,7 +52,7 @@ type Signal struct {
 	Reasons     []string
 }
 
-func Analyze(b Baseline, status int, body []byte, dur time.Duration, markers []string, lenPct int, reflect string, hdr http.Header) Signal {
+func Analyze(b Baseline, status int, body []byte, dur time.Duration, markers []string, lenPct int, reflect string, hdr http.Header, flagSlow bool) Signal {
 	var s Signal
 	low := strings.ToLower(string(body))
 
@@ -103,9 +103,13 @@ func Analyze(b Baseline, status int, body []byte, dur time.Duration, markers []s
 		s.Reasons = append(s.Reasons, fmt.Sprintf("len 0->%d", len(body)))
 	}
 
-	if th := b.SlowThreshold(); th > 0 && dur > th {
-		s.Interesting = true
-		s.Reasons = append(s.Reasons, fmt.Sprintf("slow %s (base mean %s)", dur.Round(time.Millisecond), b.Mean.Round(time.Millisecond)))
+	// Timing is opt-in: on jittery links (VPN/THM) a slow-but-identical response
+	// is almost always the network, not SSRF, and floods the output with noise.
+	if flagSlow {
+		if th := b.SlowThreshold(); th > 0 && dur > th {
+			s.Interesting = true
+			s.Reasons = append(s.Reasons, fmt.Sprintf("slow %s (base mean %s)", dur.Round(time.Millisecond), b.Mean.Round(time.Millisecond)))
+		}
 	}
 
 	if len(s.Reasons) == 0 {

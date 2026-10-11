@@ -32,6 +32,7 @@ type Result struct {
 	Body     []byte
 	Header   http.Header
 	Err      error
+	Kind     string // on error: "dial" | "tls" | "write" | "read"
 	Duration time.Duration
 }
 
@@ -47,8 +48,9 @@ func Send(opts Options, reqBytes []byte) Result {
 func sendOnce(opts Options, reqBytes []byte) Result {
 	start := time.Now()
 	res := Result{}
-	fail := func(err error) Result {
+	fail := func(kind string, err error) Result {
 		res.Err = err
+		res.Kind = kind
 		res.Duration = time.Since(start)
 		return res
 	}
@@ -61,12 +63,12 @@ func sendOnce(opts Options, reqBytes []byte) Result {
 	if opts.Proxy != "" {
 		conn, err = d.Dial("tcp", opts.Proxy)
 		if err != nil {
-			return fail(fmt.Errorf("dial proxy: %w", err))
+			return fail("dial", fmt.Errorf("dial proxy: %w", err))
 		}
 		if opts.TLS {
 			if err := connectTunnel(conn, opts.TargetHost, opts.Timeout); err != nil {
 				conn.Close()
-				return fail(err)
+				return fail("dial", err)
 			}
 		} else {
 			useAbsoluteForm = true
@@ -74,7 +76,7 @@ func sendOnce(opts Options, reqBytes []byte) Result {
 	} else {
 		conn, err = d.Dial("tcp", opts.DialAddr)
 		if err != nil {
-			return fail(fmt.Errorf("dial: %w", err))
+			return fail("dial", fmt.Errorf("dial: %w", err))
 		}
 	}
 	defer conn.Close()
@@ -83,7 +85,7 @@ func sendOnce(opts Options, reqBytes []byte) Result {
 	if opts.TLS {
 		tconn := tls.Client(conn, &tls.Config{InsecureSkipVerify: opts.Insecure, ServerName: opts.SNI})
 		if err := tconn.Handshake(); err != nil {
-			return fail(fmt.Errorf("tls handshake: %w", err))
+			return fail("tls", fmt.Errorf("tls handshake: %w", err))
 		}
 		conn = tconn
 		_ = conn.SetDeadline(time.Now().Add(opts.Timeout))
@@ -94,13 +96,13 @@ func sendOnce(opts Options, reqBytes []byte) Result {
 		out = toAbsoluteForm(reqBytes, opts.TargetHost)
 	}
 	if _, err := conn.Write(out); err != nil {
-		return fail(fmt.Errorf("write: %w", err))
+		return fail("write", fmt.Errorf("write: %w", err))
 	}
 
 	br := bufio.NewReader(conn)
 	resp, err := http.ReadResponse(br, &http.Request{Method: opts.Method})
 	if err != nil {
-		return fail(fmt.Errorf("read response: %w", err))
+		return fail("read", fmt.Errorf("read response: %w", err))
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxBody))

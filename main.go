@@ -75,6 +75,7 @@ type config struct {
 	max              int
 	maxErrors        int
 	retries          int
+	timing           bool
 	listParams       bool
 	silent           bool
 	extraHdrs        headerList
@@ -189,6 +190,7 @@ PLACEHOLDERS:
 DETECTION:
   -match <list>           extra body signatures (comma-separated) = strong hit
   -lenpct <n>             body-length delta percent to flag  (default 25)
+  -timing                 flag slow responses as hits (off; noisy on VPN/THM)
   -interactsh             built-in interactsh client for blind OOB (auto-confirm)
   -interactsh-server <u>  self-hosted interactsh server  (default public)
   -interactsh-token <t>   server auth token (or env POSTERN_INTERACTSH_TOKEN)
@@ -289,6 +291,7 @@ func parseFlags() *config {
 	flag.IntVar(&cfg.max, "max", 0, "abort before start if case count exceeds this (0 = no cap)")
 	flag.IntVar(&cfg.maxErrors, "max-errors", 25, "circuit breaker: consecutive errors / sustained slow responses before auto-stop")
 	flag.IntVar(&cfg.retries, "retries", 1, "retries on network error before recording a result (a transient reset != closed port)")
+	flag.BoolVar(&cfg.timing, "timing", false, "flag slow responses as hits (blind-timing signal; off by default - noisy on jittery links)")
 	flag.Var(&cfg.extraHdrs, "H", "extra header for every request (repeatable): -H 'Name: Value'")
 	flag.Parse()
 	return cfg
@@ -610,7 +613,11 @@ func run(cfg *config) error {
 		if res.Err != nil {
 			atomic.AddInt64(&nErr, 1)
 			recordCluster("ERR", short(c.Label, 50))
-			if atomic.AddInt64(&consecErr, 1) >= int64(cfg.maxErrors) {
+			// In port-scan mode a non-dial error (timeout/reset while the app
+			// fetches a closed internal port) is scan feedback, not a sign the
+			// target is dying - only count dial failures toward the breaker.
+			countErr := cfg.ports == "" || res.Kind == "dial"
+			if countErr && atomic.AddInt64(&consecErr, 1) >= int64(cfg.maxErrors) {
 				trip(fmt.Sprintf("%d consecutive request errors", cfg.maxErrors))
 			}
 			if cfg.verbose {
@@ -631,7 +638,7 @@ func run(cfg *config) error {
 		}
 
 		recordCluster(fmt.Sprintf("%d/%d", res.Status, res.BodyLen), short(c.Label, 50))
-		sig := detect.Analyze(bl, res.Status, res.Body, res.Duration, markers, cfg.lenPct, c.Payload, res.Header)
+		sig := detect.Analyze(bl, res.Status, res.Body, res.Duration, markers, cfg.lenPct, c.Payload, res.Header, cfg.timing)
 		if sig.Strong {
 			atomic.AddInt64(&nStrong, 1)
 		}
@@ -855,7 +862,7 @@ func probeHeaders(cfg *config, pfs fs.FS, base *rawreq.Request, sopts sender.Opt
 				live = true
 				break
 			}
-			if detect.Analyze(bl, res.Status, res.Body, res.Duration, markers, cfg.lenPct, "", nil).Interesting {
+			if detect.Analyze(bl, res.Status, res.Body, res.Duration, markers, cfg.lenPct, "", nil, false).Interesting {
 				live = true
 				break
 			}
