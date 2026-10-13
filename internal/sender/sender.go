@@ -81,9 +81,12 @@ func isRedirect(status int) bool {
 	return false
 }
 
-// nextHop builds the options and raw request for the next redirect hop: it
-// resolves Location against the current URL, retargets the dial/Host/SNI when the
-// host changes, and downgrades to GET (dropping the body) for 301/302/303.
+// nextHop builds the options and raw request for the next redirect hop. Location
+// is resolved against the request's own Host header (not the dial target), so an
+// injected Host (e.g. "admin.local" while dialing localhost:9090) survives a
+// relative redirect - the whole point of a redirect-chain host-header attack. The
+// dial target/SNI/TLS are only retargeted when the redirect goes to a genuinely
+// different host. 301/302/303 downgrade to GET and drop the body.
 func nextHop(opts Options, reqBytes []byte, loc string, status int) (Options, []byte, bool) {
 	line, headers, body := splitRequest(reqBytes)
 	parts := strings.SplitN(line, " ", 3)
@@ -92,40 +95,60 @@ func nextHop(opts Options, reqBytes []byte, loc string, status int) (Options, []
 	}
 	method, curTarget, proto := parts[0], parts[1], parts[2]
 
+	curHostHdr := ""
+	for _, h := range headers {
+		if len(h) >= 5 && strings.EqualFold(h[:5], "host:") {
+			curHostHdr = strings.TrimSpace(h[5:])
+			break
+		}
+	}
+	authority := curHostHdr
+	if authority == "" {
+		authority = opts.TargetHost
+	}
+
 	scheme := "http"
 	if opts.TLS {
 		scheme = "https"
 	}
-	cur := &url.URL{Scheme: scheme, Host: opts.TargetHost}
+	cur := &url.URL{Scheme: scheme, Host: authority}
 	if u, err := url.Parse(curTarget); err == nil {
-		if u.IsAbs() {
-			cur = u
-		} else {
-			cur.Path, cur.RawQuery = u.Path, u.RawQuery
-		}
+		cur.Path, cur.RawQuery = u.Path, u.RawQuery
 	}
-	next, err := cur.Parse(strings.TrimSpace(loc))
-	if err != nil || next.Host == "" {
+
+	locTrim := strings.TrimSpace(loc)
+	next, err := cur.Parse(locTrim)
+	if err != nil {
 		return opts, nil, false
 	}
+	locParsed, _ := url.Parse(locTrim)
+	relative := locParsed == nil || locParsed.Host == ""
 
-	newTLS := next.Scheme == "https"
-	host := next.Hostname()
-	port := next.Port()
-	if port == "" {
-		if newTLS {
-			port = "443"
-		} else {
-			port = "80"
+	newHostHdr := authority
+	if !relative {
+		locHost := next.Host
+		// Keep dialing the same place when the redirect stays on the host we're
+		// already talking to (our injected Host, or the real dial target) - only a
+		// redirect to a different host re-points the dial/SNI/TLS.
+		sameSite := strings.EqualFold(locHost, curHostHdr) || strings.EqualFold(locHost, opts.TargetHost)
+		newHostHdr = locHost
+		if !sameSite {
+			opts.TLS = next.Scheme == "https"
+			host := next.Hostname()
+			port := next.Port()
+			if port == "" {
+				if opts.TLS {
+					port = "443"
+				} else {
+					port = "80"
+				}
+			}
+			opts.SNI = host
+			opts.TargetHost = locHost
+			if opts.Proxy == "" {
+				opts.DialAddr = net.JoinHostPort(host, port)
+			}
 		}
-	}
-	hostport := net.JoinHostPort(host, port)
-
-	opts.TLS = newTLS
-	opts.SNI = host
-	opts.TargetHost = next.Host
-	if opts.Proxy == "" {
-		opts.DialAddr = hostport
 	}
 
 	// 303 always, and 301/302 by common practice, switch to GET without a body.
@@ -148,7 +171,7 @@ func nextHop(opts Options, reqBytes []byte, loc string, status int) (Options, []
 		}
 		b.WriteString(h + "\r\n")
 	}
-	b.WriteString("Host: " + next.Host + "\r\n\r\n")
+	b.WriteString("Host: " + newHostHdr + "\r\n\r\n")
 	if len(body) > 0 {
 		b.Write(body)
 	}

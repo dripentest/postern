@@ -676,8 +676,10 @@ func run(cfg *config) error {
 	// here so process can clear it before printing a live finding above it).
 	showProgress := clean && !cfg.silent && isTTY(os.Stdout)
 	var liveGrn, liveRst string
+	var cGrn, cYel, cDim, cRst string
 	if bannerColor(os.Stdout) {
 		liveGrn, liveRst = "\033[32m", "\033[0m"
+		cGrn, cYel, cDim, cRst = "\033[32m", "\033[33m", "\033[90m", "\033[0m"
 	}
 	var nLive int64
 	const liveCap = 25
@@ -786,20 +788,25 @@ func run(cfg *config) error {
 		// Verbose mode prints every noteworthy request; clean mode stays quiet and
 		// lets the live progress line + the final summary do the talking.
 		if cfg.verbose && (sig.Interesting || c.OOB != "") {
-			tag := "    "
+			tag, col := "other ", cDim
 			switch {
 			case sig.Strong:
-				tag = "STRONG"
-			case sig.Interesting:
-				tag = "hit "
+				tag, col = "found ", cGrn
 			case c.OOB != "":
-				tag = "oob "
+				tag, col = "oob   ", cGrn
+			case res.Status >= 200 && res.Status < 300:
+				tag, col = "bypass", cGrn
+			case res.Status >= 500:
+				tag, col = "error ", cYel
+			case res.Status >= 400:
+				tag, col = "blocked", cDim
 			}
-			line := fmt.Sprintf("[%-6s] %-6s %3d %7d  %-28s | %s",
-				tag, c.ID, res.Status, res.BodyLen, short(strings.Join(sig.Reasons, ","), 28), short(labelTag(c), 60))
+			reason := prettyReasons(sig.Reasons)
 			if c.OOB != "" {
-				line += "  (OOB: " + c.OOB + ")"
+				reason = strings.TrimSpace(reason + " OOB:" + c.OOB)
 			}
+			line := fmt.Sprintf("  %s%-7s%s %3d %6dB  %-52s %s%s%s",
+				col, tag, cRst, res.Status, res.BodyLen, short(labelTag(c), 52), cDim, reason, cRst)
 			printMu.Lock()
 			fmt.Println(line)
 			printMu.Unlock()
@@ -1092,6 +1099,27 @@ func humanizeStrong(reasons []string) string {
 type noteCat struct {
 	count int
 	ex    []string
+}
+
+// prettyReasons rewrites detection reasons for the verbose per-line view: status
+// and length deltas get arrows, markers/reflection get their plain phrasing.
+func prettyReasons(reasons []string) string {
+	var out []string
+	for _, r := range reasons {
+		switch {
+		case r == "-":
+			continue
+		case strings.HasPrefix(r, "status "):
+			out = append(out, strings.ReplaceAll(strings.TrimPrefix(r, "status "), "->", "→"))
+		case strings.HasPrefix(r, "len "):
+			out = append(out, strings.ReplaceAll(r, "->", "→"))
+		case strings.HasPrefix(r, "marker:"), strings.HasPrefix(r, "reflected"):
+			out = append(out, humanizeStrong([]string{r}))
+		default:
+			out = append(out, r)
+		}
+	}
+	return strings.Join(out, ", ")
 }
 
 func statusClass(s int) string {
