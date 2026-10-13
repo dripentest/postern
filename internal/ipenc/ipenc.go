@@ -40,7 +40,10 @@ func Encode(s string) []Rep {
 	add(fmt.Sprintf("0x%x.%d.%d.%d", a, b, c, d), "mixed")
 	add(fmt.Sprintf("%d.%d", a, b<<16|c<<8|d), "dotless-2")
 	add(fmt.Sprintf("%d.%d.%d", a, b, c<<8|d), "dotless-3")
-	add(fmt.Sprintf("%03d.%03d.%03d.%03d", a, b, c, d), "leading-zeros")
+	// NOTE: a "%03d" zero-padded form like 172.031.000.020 is intentionally NOT
+	// emitted: inet_aton/libcurl read a leading 0 as OCTAL, so it resolves to a
+	// different address (172.25.0.16 here), not the target. The "octal" and
+	// "octal-padded" reps below are the correct way to hit octal-parsing stacks.
 	add(fmt.Sprintf("[::ffff:%d.%d.%d.%d]", a, b, c, d), "ipv6-mapped")
 	add(fmt.Sprintf("[::ffff:%x:%x]", a<<8|b, c<<8|d), "ipv6-hex")
 	add(fmt.Sprintf("[0:0:0:0:0:ffff:%d.%d.%d.%d]", a, b, c, d), "ipv6-mapped-full")

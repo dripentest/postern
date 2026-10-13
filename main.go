@@ -922,7 +922,8 @@ feed:
 	}
 
 	if clean {
-		printSummaryClean(os.Stdout, notable, findings, nSent, nErr, bl.Status, aborted, cfg.out)
+		oobUsed := oobClient != nil || staticMapper.Enabled()
+		printSummaryClean(os.Stdout, notable, findings, nSent, nErr, bl.Status, aborted, cfg.out, oobUsed)
 	} else {
 		fmt.Println(strings.Repeat("-", 72))
 		if aborted {
@@ -1164,7 +1165,7 @@ func describeStatus(status int) string {
 // classes that differed from the baseline, a one-line verdict, and where to dig in.
 // Only responses that differ from the baseline count as "notable"; everything that
 // looked like the baseline is reported as a single typical-response total.
-func printSummaryClean(w io.Writer, notable map[string]*noteCat, findings []finding, sent, nErr int64, baselineStatus int, aborted bool, outPath string) {
+func printSummaryClean(w io.Writer, notable map[string]*noteCat, findings []finding, sent, nErr int64, baselineStatus int, aborted bool, outPath string, oobUsed bool) {
 	color := bannerColor(w)
 	var grn, yel, dim, bold, rst string
 	if color {
@@ -1244,6 +1245,12 @@ func printSummaryClean(w io.Writer, notable map[string]*noteCat, findings []find
 		fmt.Fprintf(w, "  → Some responses differed from the baseline - worth a manual look.\n")
 	default:
 		fmt.Fprintf(w, "  → Nothing stood out; the target handled every payload the same way.\n")
+	}
+	// Blind SSRF (the app fetches but the response never changes) is invisible to
+	// response diffing - point the user at the out-of-band check when they aren't
+	// already using it and nothing surfaced in-band.
+	if !oobUsed && len(findings) == 0 && notable["BYPASS"] == nil {
+		fmt.Fprintf(w, "    For blind SSRF (no visible change), re-run with -interactsh.\n")
 	}
 
 	tip := "  More detail: -v"
@@ -1636,7 +1643,7 @@ func parseSweepEnc(s string) []string {
 		return nil
 	}
 	if strings.EqualFold(s, "all") {
-		return []string{"decimal", "hex", "octal", "mixed", "dotless", "leading", "ipv6"}
+		return []string{"decimal", "hex", "octal", "mixed", "dotless", "ipv6"}
 	}
 	var out []string
 	for _, p := range strings.Split(s, ",") {

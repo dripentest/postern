@@ -123,6 +123,34 @@ func HashBody(b []byte) string {
 	return hex.EncodeToString(h[:6])
 }
 
+// distinctive reports whether a reflected value is specific enough that finding
+// it in a response (and not the baseline) is a real signal rather than noise. An
+// injected payload is controlled, so we accept full URLs and bare numeric/hex
+// host tokens (decimal/hex/IPv6 IP forms) too - not just dotted hostnames, which
+// the previous dot-requiring check missed for exactly the strongest encodings.
 func distinctive(s string) bool {
-	return len(s) >= 8 && strings.ContainsAny(s, "abcdefghijklmnopqrstuvwxyz") && strings.Contains(s, ".")
+	s = strings.TrimSpace(s)
+	if len(s) < 8 {
+		return false
+	}
+	if strings.Contains(s, "://") {
+		return true // a full URL we injected
+	}
+	if strings.Contains(s, ".") && strings.ContainsAny(s, "abcdefghijklmnopqrstuvwxyz") {
+		return true // dotted hostname
+	}
+	// A long bare IP token: decimal (2887712788), hex (0xac1f0014), IPv6-hex
+	// ([::ffff:ac1f:14]). Only [0-9a-fx:.\[\]] and long enough to be specific.
+	if len(s) >= 9 {
+		for _, c := range s {
+			switch {
+			case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F',
+				c == 'x', c == 'X', c == ':', c == '.', c == '[', c == ']':
+			default:
+				return false
+			}
+		}
+		return true
+	}
+	return false
 }
