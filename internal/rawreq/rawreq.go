@@ -199,6 +199,16 @@ func (r *Request) DiscoverParams() []Param {
 							add(k, "json", fmt.Sprint(vv))
 						case bool:
 							add(k, "json", fmt.Sprint(vv))
+						case []interface{}:
+							// register the key if the array holds strings (e.g.
+							// {"urls":["http://..."]}, a common batch-fetch SSRF sink)
+							for _, e := range vv {
+								if s, ok := e.(string); ok {
+									add(k, "json", s)
+									break
+								}
+							}
+							walk(vv) // still recurse for arrays of objects
 						default:
 							walk(v)
 						}
@@ -340,8 +350,19 @@ func replaceJSONString(body, name, payload string) (string, bool) {
 		case map[string]interface{}:
 			for k := range t {
 				if k == name {
-					t[k] = payload
-					found = true
+					// Replace string elements inside a matching array in place
+					// (keep it an array); otherwise set the scalar value.
+					if arr, ok := t[k].([]interface{}); ok {
+						for i, e := range arr {
+							if _, isStr := e.(string); isStr {
+								arr[i] = payload
+								found = true
+							}
+						}
+					} else {
+						t[k] = payload
+						found = true
+					}
 				} else {
 					walk(t[k])
 				}
