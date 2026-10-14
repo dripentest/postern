@@ -150,13 +150,21 @@ save everything for `jq`/grep.
 
 ## Where postern fits
 
-It is **not** a dirbuster or a port scanner — it complements them:
+The niche is narrow on purpose: **from one raw request, find and confirm an SSRF
+or Host-Header bypass — with IP encodings generated per target — then recon the
+internal network through it.** It is not a dirbuster, a port scanner, or an
+exploitation framework; it complements them.
 
-| Tool | Does | postern |
+| Tool | Does | postern instead |
 |---|---|---|
-| **ffuf / feroxbuster** | discover parameters and paths | fuzzes SSRF/host bypasses into a *known* request |
-| **nmap** | scan a host from the outside | port-scans *internal* hosts **through** an SSRF |
-| **SSRFmap** | weaponize an SSRF (RCE, pivot, read) | finds and confirms the bypass first (`-r`/`-p` compatible) |
+| **ffuf / feroxbuster** | discover parameters and paths | fuzzes bypasses into a *known* request |
+| **nmap** | scan a host from the outside | port-scans *internal* hosts **through** the SSRF |
+| **SSRFmap** | weaponize a confirmed SSRF (RCE, pivot, read) | finds and confirms the bypass first (`-r`/`-p` compatible) |
+| **ReSSRF / nuclei (DAST)** | fuzz params/headers for SSRF callbacks (OOB) | takes a raw request and adds generated/tagged IP encodings, real Host-Header attacks, internal scan-through-bypass, and DNS rebinding — in one binary |
+
+SSRF parameter/header fuzzing with out-of-band confirmation is not new — ReSSRF
+and nuclei do it well. postern's contribution is the *combination* above from a
+single raw request, not new attack classes.
 
 ## Blind detection (interactsh)
 
@@ -196,6 +204,10 @@ go test -race ./...
 ```
 
 CI runs `go vet`, `go build` and the race-enabled test suite on every push.
+
+## License
+
+[MIT](LICENSE) © dripentest
 
 ## Disclaimer
 

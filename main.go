@@ -281,6 +281,9 @@ WHERE POSTERN FITS (it is not a dirbuster or a port scanner):
   SSRFmap              weaponizes an SSRF (RCE, pivot, file read). postern finds
                        and confirms the bypass first; its -r/-p input is
                        compatible, so hand the finding straight over.
+  ReSSRF / nuclei      also fuzz params/headers for SSRF callbacks (OOB). postern
+                       adds a raw-request input, generated/tagged IP encodings,
+                       real Host-Header attacks, scan-through-bypass and rebind.
 
 SELECTED FLAGS:
   -p auto              fuzz only parameters that look SSRF-capable (url/host-like
