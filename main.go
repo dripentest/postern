@@ -162,6 +162,14 @@ MODES:
   host   Host-Header attacks (override headers x values, routing SSRF)
   both   run ssrf then host
 
+WORKFLOW (typical staged run):
+  1. postern -r req.txt -list-params                      # what's injectable
+  2. postern -r req.txt -mode ssrf -p auto -interactsh    # find SSRF (in-band + blind)
+  3. postern -r req.txt -mode host -probe -match "Admin"  # host-header / admin bypass
+  4. ... -scan-host 10.0.0.5 -ports top                   # scan one internal host
+  5. ... -sweep private -ports 80,6379 -rate 10           # map the internal network
+  Confirmed a bypass on one host? Re-run the sweep with just that encoding
+  (-sweep-encode decimal) to keep the volume sane.
 
 TARGET:
   -r <file>               raw HTTP request file (Burp "Copy to file")  [required]
@@ -254,8 +262,38 @@ EXAMPLES:
   # hammer only the rebinding payloads to win a TOCTOU race
   postern -r req.txt -mode ssrf -p url -rebind-only -rebind 1.2.3.4:169.254.169.254 -repeat 50 -follow-redirects 3
 
+  # JSON body with a list of URLs ({"urls":["..."]}) - fuzz the array
+  postern -r req.txt -mode ssrf -p urls -interactsh
+
+  # follow a redirect chain while keeping an injected Host (admin bypass)
+  postern -r req.txt -mode host -path /redir1 -follow-redirects 3 -match "Dashboard"
+
   # run everything through Burp and print all results
   postern -r req.txt -mode both -proxy 127.0.0.1:8080 -v
+
+WHERE POSTERN FITS (it is not a dirbuster or a port scanner):
+  ffuf / feroxbuster   discover parameters and paths. Use them to find the
+                       injectable param, then postern to fuzz SSRF/host bypasses
+                       into that known request.
+  nmap                 scans a host from the outside. postern port-scans INTERNAL
+                       hosts THROUGH a confirmed SSRF - the target scans for you,
+                       reaching services nmap can't see from outside.
+  SSRFmap              weaponizes an SSRF (RCE, pivot, file read). postern finds
+                       and confirms the bypass first; its -r/-p input is
+                       compatible, so hand the finding straight over.
+
+SELECTED FLAGS:
+  -p auto              fuzz only parameters that look SSRF-capable (url/host-like
+                       names, URL/IP/base64 values); -p all fuzzes every param.
+  -sweep-encode <k>    apply an IP encoding to each swept host - use the one you
+                       already confirmed bypasses the filter, not "all".
+  -probe               in host mode, send each header once and keep only the ones
+                       that change the response (core headers always kept).
+  -follow-redirects n  chase 3xx to the final response; an injected Host survives
+                       relative redirects (redirect-chain host-header attacks).
+  -interactsh          built-in blind/OOB confirmation - the only way to see a
+                       blind SSRF (one with no visible response difference).
+  -rate / -max         stay safe on live targets: cap requests/sec and total cases.
 `
 
 func main() {
