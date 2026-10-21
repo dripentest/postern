@@ -72,3 +72,15 @@ func TestAnalyzeTimingOptIn(t *testing.T) {
 		t.Error("slow response must be flagged when flagSlow=true")
 	}
 }
+
+func TestAnalyzeNoBaselineOnlyAbsoluteSignals(t *testing.T) {
+	// Baseline failed (status 0 = no response). Status/length diffs must NOT fire
+	// against it, or every response is flagged. Only markers/reflection count.
+	bl := NewBaseline(0, nil, 0, 0, []string{"ami-id"})
+	if s := Analyze(bl, 200, []byte("ordinary page body"), 0, []string{"ami-id"}, 25, "", nil, false); s.Interesting {
+		t.Errorf("no baseline: a plain 200 must not be flagged; reasons=%v", s.Reasons)
+	}
+	if s := Analyze(bl, 200, []byte("ami-id: ami-0lab"), 0, []string{"ami-id"}, 25, "", nil, false); !s.Strong {
+		t.Error("no baseline: a marker hit must still be flagged")
+	}
+}

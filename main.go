@@ -561,7 +561,7 @@ func run(cfg *config) error {
 	}
 	var bl detect.Baseline
 	if len(durs) == 0 {
-		fmt.Printf("[!] could not read a baseline response: %v - results will be rougher\n", lastErr)
+		fmt.Printf("[!] no baseline response (%v) - flagging only signature/reflection/OOB hits;\n    raise -timeout or lower -rate on a slow target to get a baseline\n", lastErr)
 		bl = detect.NewBaseline(0, nil, 0, 0, markers)
 	} else {
 		mean, std := meanStd(durs)

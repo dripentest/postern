@@ -84,23 +84,29 @@ func Analyze(b Baseline, status int, body []byte, dur time.Duration, markers []s
 		}
 	}
 
-	if status != b.Status {
-		s.Interesting = true
-		s.Reasons = append(s.Reasons, fmt.Sprintf("status %d->%d", b.Status, status))
-	}
-
-	if b.BodyLen > 0 {
-		delta := len(body) - b.BodyLen
-		if delta < 0 {
-			delta = -delta
-		}
-		if pct := delta * 100 / b.BodyLen; pct >= lenPct {
+	// Status/length diffing is only meaningful against a real baseline. When the
+	// baseline request failed (status 0 = no response), comparing against it would
+	// flag every single response as "differs", so fall back to absolute signals
+	// only (markers / reflection / OOB).
+	if b.Status != 0 {
+		if status != b.Status {
 			s.Interesting = true
-			s.Reasons = append(s.Reasons, fmt.Sprintf("len %d->%d (%+d%%)", b.BodyLen, len(body), (len(body)-b.BodyLen)*100/b.BodyLen))
+			s.Reasons = append(s.Reasons, fmt.Sprintf("status %d->%d", b.Status, status))
 		}
-	} else if len(body) > 0 {
-		s.Interesting = true
-		s.Reasons = append(s.Reasons, fmt.Sprintf("len 0->%d", len(body)))
+
+		if b.BodyLen > 0 {
+			delta := len(body) - b.BodyLen
+			if delta < 0 {
+				delta = -delta
+			}
+			if pct := delta * 100 / b.BodyLen; pct >= lenPct {
+				s.Interesting = true
+				s.Reasons = append(s.Reasons, fmt.Sprintf("len %d->%d (%+d%%)", b.BodyLen, len(body), (len(body)-b.BodyLen)*100/b.BodyLen))
+			}
+		} else if len(body) > 0 {
+			s.Interesting = true
+			s.Reasons = append(s.Reasons, fmt.Sprintf("len 0->%d", len(body)))
+		}
 	}
 
 	// Timing is opt-in: on jittery links (VPN/THM) a slow-but-identical response

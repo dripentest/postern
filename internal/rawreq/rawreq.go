@@ -170,7 +170,11 @@ func (r *Request) DiscoverParams() []Param {
 	ct := strings.ToLower(r.HeaderValue("Content-Type"))
 	body := string(r.Body)
 
-	if strings.Contains(ct, "x-www-form-urlencoded") || looksForm(body) {
+	// Only fall back to the form-urlencoded heuristic when the Content-Type does
+	// not already declare a structured body - otherwise a multipart body (whose
+	// `name="x"` parts contain `=`) or JSON is mis-parsed into junk "form" params.
+	structured := strings.Contains(ct, "multipart/form-data") || strings.Contains(ct, "json")
+	if strings.Contains(ct, "x-www-form-urlencoded") || (!structured && looksForm(body)) {
 		for _, kv := range strings.Split(body, "&") {
 			if kv == "" {
 				continue
@@ -253,7 +257,11 @@ func (r *Request) InjectParam(name, payload string) (*Request, error) {
 	ct := strings.ToLower(r.HeaderValue("Content-Type"))
 	body := string(r.Body)
 
-	if strings.Contains(ct, "x-www-form-urlencoded") || looksForm(body) {
+	// Only fall back to the form-urlencoded heuristic when the Content-Type does
+	// not already declare a structured body - otherwise a multipart body (whose
+	// `name="x"` parts contain `=`) or JSON is mis-parsed into junk "form" params.
+	structured := strings.Contains(ct, "multipart/form-data") || strings.Contains(ct, "json")
+	if strings.Contains(ct, "x-www-form-urlencoded") || (!structured && looksForm(body)) {
 		if nb, ok := replaceFormParam(body, name, payload); ok {
 			c := r.Clone()
 			c.SetBody([]byte(nb))
