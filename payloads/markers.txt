@@ -17,6 +17,14 @@ RefCnt
 HW address
 nameserver
 
+# ---------- Containers / k8s / app secrets ----------
+# cgroup (kubepods) confirms a k8s pod; .env names leak internal IPs + creds.
+kubepods
+DATABASE_URL
+DB_PASSWORD
+APP_KEY
+SECRET_KEY
+
 # ---------- AWS metadata ----------
 ami-id
 instance-id

@@ -1115,6 +1115,10 @@ func humanizeStrong(reasons []string) string {
 				return "read /etc/hosts"
 			case strings.Contains(m, "refcnt"), strings.Contains(m, "hw address"), strings.Contains(m, "nameserver"):
 				return "read host network config (routes/ARP/DNS)"
+			case strings.Contains(m, "kubepods"):
+				return "read cgroup (Kubernetes pod)"
+			case strings.Contains(m, "database_url"), strings.Contains(m, "db_password"), strings.Contains(m, "app_key"), strings.Contains(m, "secret_key"):
+				return "read app config / secrets (.env)"
 			case strings.Contains(m, "ami-id"), strings.Contains(m, "instance-id"), strings.Contains(m, "iam/security"), strings.Contains(m, "accesskeyid"), strings.Contains(m, "secretaccesskey"), strings.Contains(m, "security-credentials"):
 				return "reached AWS metadata / credentials"
 			case strings.Contains(m, "computemetadata"), strings.Contains(m, "access_token"), strings.Contains(m, "service-account"), strings.Contains(m, "oauth2"):
