@@ -13,6 +13,14 @@ file:///proc/self/environ
 file:///proc/self/cmdline
 file:///proc/self/cwd/
 file:///proc/net/tcp
+file:///proc/net/tcp6
+file:///proc/net/udp
+# network recon: find the internal subnet / live hosts without cloud metadata
+file:///proc/net/arp
+file:///proc/net/route
+file:///proc/net/fib_trie
+file:///etc/resolv.conf
+file:///etc/network/interfaces
 file:///c:/windows/win.ini
 file://\/\/etc/passwd
 file:/etc/passwd

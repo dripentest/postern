@@ -11,6 +11,12 @@ daemon:x:1:1
 /sbin/nologin
 127.0.0.1	localhost
 
+# ---------- Host network config (/proc/net/*, resolv.conf) ----------
+# Surfaces the routing table / ARP cache / DNS used to map the internal network.
+RefCnt
+HW address
+nameserver
+
 # ---------- AWS metadata ----------
 ami-id
 instance-id
