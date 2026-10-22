@@ -40,6 +40,21 @@ type Case struct {
 	OOB     string
 	Label   string
 	Tag     string
+	ReqHdr  string // extra request header this payload needs (e.g. metadata flavor)
+}
+
+// metadataHeader returns the request header a metadata endpoint requires, so the
+// payload carries it automatically instead of the user passing a global flag:
+// GCP/Yandex need Metadata-Flavor, Azure IMDS needs Metadata: true. Only the
+// payload that needs it gets it - other requests stay byte-identical to the input.
+func metadataHeader(u string) string {
+	switch {
+	case strings.Contains(u, "computeMetadata"):
+		return "Metadata-Flavor: Google"
+	case strings.Contains(u, "/metadata/instance"), strings.Contains(u, "/metadata/identity"):
+		return "Metadata: true"
+	}
+	return ""
 }
 
 var ssrfFiles = []string{"ssrf-targets.txt", "metadata.txt", "schemes.txt", "redirect-rebind.txt"}
@@ -68,7 +83,7 @@ func SSRF(fsys fs.FS, p Params, o OOB) ([]Case, error) {
 			if oobHost != "" {
 				o.Record(oobHost, val)
 			}
-			cases = append(cases, Case{ID: id, Mode: "ssrf", Source: fname, Payload: val, OOB: oobHost, Label: val})
+			cases = append(cases, Case{ID: id, Mode: "ssrf", Source: fname, Payload: val, OOB: oobHost, Label: val, ReqHdr: metadataHeader(val)})
 		}
 	}
 	// IP-encoding bypasses, generated for the target IPs (adaptive, tagged by kind).

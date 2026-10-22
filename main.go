@@ -179,8 +179,8 @@ TARGET:
   -tls                    use TLS when -url is not given
   -proxy <host:port>      route every request through an HTTP proxy (Burp)
   -H <"Name: Value">      add a header to every request  (repeatable)
-  -cloud <preset>         metadata preset, sets the required header:
-                          gcp|yandex (Metadata-Flavor: Google), azure, all
+  -cloud <preset>         force a metadata header on ALL requests (override;
+                          metadata payloads already carry theirs): gcp|yandex|azure|all
 
 INJECTION:
   -p <name|auto|all>      parameter to fuzz, or auto / all; else FUZZ marker
@@ -244,8 +244,9 @@ EXAMPLES:
   # SSRF: let postern pick the candidate parameters
   postern -r req.txt -mode ssrf -p auto -interactsh
 
-  # Yandex Cloud / GCP metadata (token needs the Metadata-Flavor header)
-  postern -r req.txt -mode ssrf -p url -cloud yandex
+  # Yandex Cloud / GCP / Azure / OpenStack metadata all fire in a default run;
+  # the GCP/Yandex/Azure header each endpoint needs is attached automatically
+  postern -r req.txt -mode ssrf -p url
 
   # SSRF to cloud metadata via DNS rebinding (TOCTOU bypass)
   postern -r req.txt -mode ssrf -p url -rebind 1.2.3.4:169.254.169.254
@@ -360,7 +361,7 @@ func parseFlags() *config {
 	flag.IntVar(&cfg.maxErrors, "max-errors", 25, "circuit breaker: consecutive errors / sustained slow responses before auto-stop")
 	flag.IntVar(&cfg.retries, "retries", 1, "retries on network error before recording a result (a transient reset != closed port)")
 	flag.BoolVar(&cfg.timing, "timing", false, "flag slow responses as hits (blind-timing signal; off by default - noisy on jittery links)")
-	flag.StringVar(&cfg.cloud, "cloud", "", "metadata preset - adds the provider's required header: gcp|yandex|azure|all")
+	flag.StringVar(&cfg.cloud, "cloud", "", "force a metadata header on every request (built-in metadata payloads already set theirs): gcp|yandex|azure|all")
 	flag.Var(&cfg.extraHdrs, "H", "extra header for every request (repeatable): -H 'Name: Value'")
 	flag.Parse()
 	return cfg
@@ -1447,10 +1448,24 @@ func buildRequest(base *rawreq.Request, c gen.Case, param string, useTLS bool, l
 		if p == "" {
 			p = param
 		}
+		var r *rawreq.Request
+		var err error
 		if p != "" {
-			return base.InjectParam(p, c.Payload)
+			r, err = base.InjectParam(p, c.Payload)
+		} else {
+			r = base.InjectMarker(c.Payload)
 		}
-		return base.InjectMarker(c.Payload), nil
+		if err != nil {
+			return nil, err
+		}
+		// Attach the header this metadata payload needs (set in gen), so e.g.
+		// Yandex/GCP token endpoints work without the user passing -cloud.
+		if c.ReqHdr != "" {
+			if name, val, ok := strings.Cut(c.ReqHdr, ":"); ok {
+				r.UpsertHeader(strings.TrimSpace(name), strings.TrimSpace(val))
+			}
+		}
+		return r, nil
 	}
 	var r *rawreq.Request
 	switch c.Variant {
