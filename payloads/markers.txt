@@ -47,6 +47,11 @@ oauth2/token
 "vmId"
 "subscriptionId"
 
+# ---------- OpenStack metadata (VK Cloud, SberCloud, Selectel) ----------
+availability_zone
+random_seed
+securitytoken
+
 # ---------- Redis / Memcached banners ----------
 redis_version
 STAT pid
