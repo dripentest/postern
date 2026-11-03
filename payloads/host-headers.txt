@@ -28,6 +28,11 @@ X-Override-Host
 X-Backend-Host
 X-Backend-Server
 
+# ---------- Framework auth-middleware bypass ----------
+# x-middleware-subrequest: Next.js CVE-2025-29927 (skips middleware auth).
+# Pair with the middleware-path values in host-values.txt.
+x-middleware-subrequest
+
 # ---------- Client-IP family (SSRF / ACL / admin-panel bypass) ----------
 X-Client-IP
 X-Real-IP
