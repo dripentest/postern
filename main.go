@@ -570,12 +570,15 @@ func run(cfg *config) error {
 		fmt.Printf("%sup to %d hop(s)\n", redPfx, cfg.followRedirects)
 	}
 	var durs []time.Duration
+	var lens []int
 	var lastOK sender.Result
 	var lastErr error
-	for i := 0; i < 5; i++ {
+	const baselineSamples = 8 // enough to estimate length jitter / timing μ,σ cheaply
+	for i := 0; i < baselineSamples; i++ {
 		r := sender.Send(sopts, base.Bytes())
 		if r.Err == nil {
 			durs = append(durs, r.Duration)
+			lens = append(lens, r.BodyLen)
 			lastOK = r
 		} else {
 			lastErr = r.Err
@@ -588,10 +591,16 @@ func run(cfg *config) error {
 	} else {
 		mean, std := meanStd(durs)
 		bl = detect.NewBaseline(lastOK.Status, lastOK.Body, mean, std, markers)
+		bl.SetLenJitter(lens)
 		if !clean {
 			fmt.Printf("[*] baseline: status=%d len=%d hash=%s timing=%s±%s (n=%d)\n",
 				lastOK.Status, lastOK.BodyLen, detect.HashBody(lastOK.Body),
 				mean.Round(time.Millisecond), std.Round(time.Millisecond), len(durs))
+		}
+		// A dynamic page's length swings on its own; raise the change threshold so
+		// natural jitter isn't reported as a hit.
+		if j := bl.LenJitterPct(); j >= cfg.lenPct {
+			fmt.Printf("[*] baseline length varies ±%d%% (dynamic page) - raising the length-change threshold to match\n", j)
 		}
 	}
 

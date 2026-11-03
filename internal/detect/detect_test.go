@@ -84,3 +84,20 @@ func TestAnalyzeNoBaselineOnlyAbsoluteSignals(t *testing.T) {
 		t.Error("no baseline: a marker hit must still be flagged")
 	}
 }
+
+func TestAnalyzeLenJitterSuppressesDynamicNoise(t *testing.T) {
+	// Baseline body 100 bytes; samples swing up to 140 -> natural jitter 40%.
+	bl := NewBaseline(200, make([]byte, 100), 0, 0, nil)
+	bl.SetLenJitter([]int{100, 120, 140, 110, 100})
+	if got := bl.LenJitterPct(); got != 40 {
+		t.Fatalf("jitter = %d%%, want 40%%", got)
+	}
+	// A 30% change is within the 40% natural jitter -> must NOT flag (lenPct 25).
+	if s := Analyze(bl, 200, make([]byte, 130), 0, nil, 25, "", nil, false); s.Interesting {
+		t.Errorf("30%% change within 40%% jitter must not flag; reasons=%v", s.Reasons)
+	}
+	// A 60% change exceeds the jitter -> must flag.
+	if s := Analyze(bl, 200, make([]byte, 160), 0, nil, 25, "", nil, false); !s.Interesting {
+		t.Error("60% change beyond jitter should flag")
+	}
+}

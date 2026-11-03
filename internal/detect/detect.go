@@ -10,14 +10,38 @@ import (
 )
 
 type Baseline struct {
-	Status  int
-	BodyLen int
-	Hash    string
-	Mean    time.Duration
-	Std     time.Duration
-	markers map[string]bool
-	body    string
+	Status       int
+	BodyLen      int
+	Hash         string
+	Mean         time.Duration
+	Std          time.Duration
+	lenJitterPct int // natural body-length variance across baseline samples (%)
+	markers      map[string]bool
+	body         string
 }
+
+// SetLenJitter records how much the body length naturally varies across the
+// baseline samples. On a dynamic page (CSRF tokens, timestamps, ads) the length
+// swings on its own, so Analyze must not flag a change smaller than that swing.
+func (b *Baseline) SetLenJitter(sampleLens []int) {
+	if len(sampleLens) < 2 || b.BodyLen <= 0 {
+		return
+	}
+	maxDev := 0
+	for _, n := range sampleLens {
+		d := n - b.BodyLen
+		if d < 0 {
+			d = -d
+		}
+		if d > maxDev {
+			maxDev = d
+		}
+	}
+	b.lenJitterPct = maxDev * 100 / b.BodyLen
+}
+
+// LenJitterPct is the measured natural length variance, for a startup note.
+func (b Baseline) LenJitterPct() int { return b.lenJitterPct }
 
 func NewBaseline(status int, body []byte, mean, std time.Duration, markers []string) Baseline {
 	b := Baseline{Status: status, BodyLen: len(body), Hash: HashBody(body), Mean: mean, Std: std, markers: map[string]bool{}, body: string(body)}
@@ -99,7 +123,13 @@ func Analyze(b Baseline, status int, body []byte, dur time.Duration, markers []s
 			if delta < 0 {
 				delta = -delta
 			}
-			if pct := delta * 100 / b.BodyLen; pct >= lenPct {
+			// Flag only a change larger than BOTH the user threshold and the
+			// target's own length jitter, so dynamic pages don't fire on every hit.
+			thr := lenPct
+			if b.lenJitterPct > thr {
+				thr = b.lenJitterPct
+			}
+			if pct := delta * 100 / b.BodyLen; pct >= thr {
 				s.Interesting = true
 				s.Reasons = append(s.Reasons, fmt.Sprintf("len %d->%d (%+d%%)", b.BodyLen, len(body), (len(body)-b.BodyLen)*100/b.BodyLen))
 			}
