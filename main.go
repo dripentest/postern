@@ -227,7 +227,7 @@ RATE / SAFETY:
   -timeout <dur>          per-request timeout  (default 10s)
   -retries <n>            network-error retries before recording  (default 1)
   -max <n>                abort before start if cases exceed n  (0 = no cap)
-  -max-errors <n>         circuit-breaker threshold  (default 25)
+  -max-errors <n>         consecutive-error / slow-streak auto-stop  (default 25)
 
 OUTPUT:
   -o <file>               write results as JSON Lines
@@ -358,7 +358,7 @@ func parseFlags() *config {
 	flag.StringVar(&cfg.match, "match", "", "extra body signatures (comma-separated), treated as strong hits")
 	flag.BoolVar(&cfg.probe, "probe", false, "host mode: probe each header first, skip the ones with no visible effect (keeps core headers)")
 	flag.IntVar(&cfg.max, "max", 0, "abort before start if case count exceeds this (0 = no cap)")
-	flag.IntVar(&cfg.maxErrors, "max-errors", 25, "circuit breaker: consecutive errors / sustained slow responses before auto-stop")
+	flag.IntVar(&cfg.maxErrors, "max-errors", 25, "auto-stop after this many consecutive errors / sustained slow responses")
 	flag.IntVar(&cfg.retries, "retries", 1, "retries on network error before recording a result (a transient reset != closed port)")
 	flag.BoolVar(&cfg.timing, "timing", false, "flag slow responses as hits (blind-timing signal; off by default - noisy on jittery links)")
 	flag.StringVar(&cfg.cloud, "cloud", "", "force a metadata header on every request (built-in metadata payloads already set theirs): gcp|yandex|azure|all")
@@ -719,7 +719,7 @@ func run(cfg *config) error {
 	trip := func(reason string) {
 		if atomic.CompareAndSwapInt32(&tripped, 0, 1) {
 			printMu.Lock()
-			fmt.Printf("\n[!] circuit breaker: %s - stopping to avoid overloading the target\n", reason)
+			fmt.Printf("\n[!] auto-stop: %s - halting to avoid overloading the target\n", reason)
 			printMu.Unlock()
 			stopSignals()
 		}
@@ -1254,7 +1254,7 @@ func printSummaryClean(w io.Writer, notable map[string]*noteCat, findings []find
 
 	fmt.Fprintln(w)
 	if aborted {
-		fmt.Fprintf(w, "  %sStopped early (Ctrl-C / circuit breaker).%s\n", yel, rst)
+		fmt.Fprintf(w, "  %sStopped early (Ctrl-C / auto-stop).%s\n", yel, rst)
 	}
 	fmt.Fprintf(w, "  %sResults%s\n\n", bold, rst)
 

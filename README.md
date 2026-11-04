@@ -33,9 +33,16 @@ the end — with `-v` for the full per-request detail.
 - **Generated IP encodings:** decimal, hex, hex-dotted, octal, octal-padded,
   mixed-base, dotless, and IPv6-mapped forms — each tagged so you see which one
   worked and can reuse it.
-- **Bypass arsenal:** localhost tricks, cloud metadata (AWS/GCP/Azure/DO/Alibaba/
-  OCI/k8s), schemes (`file`/`gopher`/`dict`/PHP wrappers), redirect and parser-
-  discrepancy payloads, `@`-trick and domain-confusion.
+- **Bypass arsenal:** localhost tricks, schemes (`file`/`gopher`/`dict`/PHP wrappers,
+  plus case/slash parser-differentials), redirect and parser-discrepancy payloads,
+  `@`-trick and domain-confusion.
+- **Cloud metadata, incl. CIS clouds:** AWS, GCP, **Yandex Cloud**, Azure, Alibaba,
+  **OpenStack** (VK Cloud / SberCloud / Selectel), OCI, k8s — each payload carries
+  the header its endpoint requires (`Metadata-Flavor` / `Metadata`) automatically.
+- **Map the internal network via `file://`:** `/proc/net/arp` & `route` (live hosts,
+  subnets), `/etc/resolv.conf` (DNS), cgroup / k8s service-account / `.env`
+  (container identity, neighbour IPs, secrets) — surfaced as findings, so you can
+  pivot even without cloud metadata.
 - **DNS rebinding** against TOCTOU filters (`-rebind` → 1u.ms / rbndr.us), with a
   `-rebind-only` / `-repeat` mode to win the race.
 - **Host-Header attacks:** replace / duplicate / absolute-URI / override headers,
@@ -49,8 +56,9 @@ the end — with `-v` for the full per-request detail.
 - **Detection:** baseline diff (status/length), body signatures, payload reflection
   (numeric and hostname forms), and **blind confirmation via a built-in interactsh
   client** (`-interactsh`).
-- **Safe on live targets:** rate limit, circuit breaker, case cap, graceful Ctrl-C,
-  ETA before the run.
+- **Safe on live targets:** rate limiter, an auto-stop that halts the run after
+  sustained errors or a latency blow-up, a case cap, graceful Ctrl-C, and an ETA
+  before the run.
 - Burp proxy support and JSONL output (`-o`).
 
 ## Install

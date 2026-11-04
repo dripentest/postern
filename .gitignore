@@ -5,7 +5,7 @@
 *.o
 *.a
 
-# engagement data — НИКОГДА не коммитить цели/результаты/сырые запросы
+# engagement data - NEVER commit targets, results, or raw requests
 *.req
 req*.txt
 raw/
